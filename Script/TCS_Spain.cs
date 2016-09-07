@@ -3083,7 +3083,8 @@ namespace ORTS.Scripting.Script
             public float Time;
             public Func<bool> Revoke;
             public int Priority;
-            public bool Ack;
+            public bool Acknowledgement;
+            public bool Acknowledged = false;
             public bool Displayed;
             public ETCSMessage(string text, float time, Func<bool> revoke, int priority, bool ack)
             {
@@ -3099,18 +3100,33 @@ namespace ORTS.Scripting.Script
                 Time = time;
                 Revoke = revoke;
                 Priority = priority;
-                Ack = ack;
+                Acknowledgement = ack;
                 Displayed = false;
+            }
+            public override bool Equals(object obj)
+            {
+                var a = obj as ETCSMessage;
+                if (a != null)
+                {
+                    if (id == a.id) return true;
+                    else return false;
+                }
+                else return base.Equals(obj);
+            }
+            public override int GetHashCode()
+            {
+                return base.GetHashCode();
             }
         }
         List<ETCSMessage> Messages;
         List<ETCSMessage> DispMsg;
+        float LastAck;
         protected void ViewMessages()
         {
             Messages.RemoveAll(x => x.Revoke());
             DispMsg = new List<ETCSMessage>();
-            var A = Messages.Find(x => x.Ack);
-            if(A!=null)
+            var A = Messages.Find(x => x.Acknowledgement);
+            if(A!=null && (LastAck + 1 <= ClockTime() || A.Displayed))
             {
                 DispMsg.Add(A);
                 if(!A.Displayed)
@@ -3118,6 +3134,8 @@ namespace ORTS.Scripting.Script
                     TriggerSoundInfo1();
                     A.Displayed = true;
                 }
+                if (ETCSPressed) A.Acknowledged = true;
+                LastAck = ClockTime();
             }
             else
             {
@@ -3179,7 +3197,12 @@ namespace ORTS.Scripting.Script
             switch (CurrentETCSLevel)
             {
                 case ETCS_Level.L0:
-                    if (CurrentETCSMode != ETCSMode.UN) Messages.Add(new ETCSMessage("Reconocer modo UN", ClockTime(), () => ETCSPressed, 0, true));
+                    var m = new ETCSMessage("Reconocer modo UN", ClockTime(), () => false, 0, true);
+                    if (CurrentETCSMode != ETCSMode.UN)
+                    {
+                        m.Revoke = () => m.Acknowledged;
+                        if(!Messages.Contains(m)) Messages.Add(m);
+                    }
                     CurrentETCSMode = ETCSMode.UN;
                     if (!ASFAActivated)
                     {
@@ -3192,7 +3215,8 @@ namespace ORTS.Scripting.Script
                             if (TipoASFA == Tipo_ASFA.Digital) ASFADigitalModo = ASFADigital_Modo.EXT;
                             ASFAEficacia = false;
                         }
-                        if(ETCSPressed)
+                        var a = Messages.Find(x => x.Equals(m));
+                        if (a != null && a.Acknowledged)
                         {
                             if (ASFAActivated)
                             {
@@ -3302,12 +3326,16 @@ namespace ORTS.Scripting.Script
             {
                 StartMission();
             }
-            if (CurrentETCSMode == ETCSMode.SB && Start && ETCSPressed)
+            if (CurrentETCSMode == ETCSMode.SB && Start)
             {
-                SetVigilanceAlarmDisplay(false);
-                SetVigilanceEmergencyDisplay(false);
-                CurrentETCSMode = ETCSMode.SR;
-                SetSR();
+                var a = Messages.Find(x => x.Equals(new ETCSMessage("Reconocer modo SR", 0, null, 0, true)));
+                if (a != null && a.Acknowledged)
+                {
+                    SetVigilanceAlarmDisplay(false);
+                    SetVigilanceEmergencyDisplay(false);
+                    CurrentETCSMode = ETCSMode.SR;
+                    SetSR();
+                }
             }
             if (MA != null && (MP == null || MP.D_MAMODE[0]>dMaxFront) && ISSP != null && ISSP.D_STATIC[0]<=dMaxFront && CurrentETCSMode != ETCSMode.FS)
             {
@@ -3348,7 +3376,6 @@ namespace ORTS.Scripting.Script
                 }
                 if (OverrideEoA && CurrentETCSMode != ETCSMode.SR) OverrideEoA = false;
             }
-            ViewMessages();
             if (ActiveCCS == CCS.ETCS)
             {
                 switch(CurrentETCSMode)
@@ -3384,6 +3411,7 @@ namespace ORTS.Scripting.Script
                 SetNextSpeedLimitMpS(0);
                 SetInterventionSpeedLimitMpS(0);
                 SetMonitoringStatus(MonitoringStatus.Normal);
+                ViewMessages();
                 return;
             }
             if(CurrentETCSMode == ETCSMode.PT)
@@ -3393,10 +3421,12 @@ namespace ORTS.Scripting.Script
                 SetInterventionSpeedLimitMpS(0);
                 SetMonitoringStatus(MonitoringStatus.Normal);
                 PostTripReverse();
+                ViewMessages();
                 return;
             }
             if (CurrentETCSMode != ETCSMode.RV && CurrentETCSMode != ETCSMode.PT && MA != null) ReverseMovement();
             UpdateControls();
+            ViewMessages();
             SpeedProfiles();
             SupervisedTargets();
             SpeedMonitors();
@@ -3407,7 +3437,9 @@ namespace ORTS.Scripting.Script
         {
             SetVigilanceAlarmDisplay(true);
             SetVigilanceEmergencyDisplay(true);
-            Messages.Add(new ETCSMessage("Reconocer modo SR", ClockTime(), () => ETCSPressed, 0, true));
+            var m = new ETCSMessage("Reconocer modo SR", ClockTime(), () => false, 0, true);
+            m.Revoke = () => m.Acknowledged;
+            Messages.Add(m);
             Start = true;
         }
         float PostTrip = -1;
@@ -3429,8 +3461,11 @@ namespace ORTS.Scripting.Script
                 if (SpeedMpS() < 0.1f)
                 {
                     SetVigilanceEmergencyDisplay(true);
-                    Messages.Add(new ETCSMessage("Standstill supervision", ClockTime(), () => ETCSPressed, 0, true));
-                    if (ETCSPressed)
+                    var m = new ETCSMessage("Standstill supervision", ClockTime(), () => false, 0, true);
+                    m.Revoke = () => m.Acknowledged;
+                    if(!Messages.Contains(m)) Messages.Add(m);
+                    var a = Messages.Find(x => x.Equals(m));
+                    if (a != null && a.Acknowledged)
                     {
                         StandstillApply = false;
                         ProtectionDistance = -1;
@@ -3453,8 +3488,11 @@ namespace ORTS.Scripting.Script
                     if (SpeedMpS() < 0.1f)
                     {
                         SetVigilanceEmergencyDisplay(true);
-                        Messages.Add(new ETCSMessage("Reverse movement protection", ClockTime(), () => ETCSPressed, 0, true));
-                        if (ETCSPressed)
+                        var m = new ETCSMessage("Reverse movement protection", ClockTime(), () => false, 0, true);
+                        m.Revoke = () => m.Acknowledged;
+                        if (!Messages.Contains(m)) Messages.Add(m);
+                        var a = Messages.Find(x => x.Equals(m));
+                        if (a != null && a.Acknowledged)
                         {
                             ReverseApply = false;
                             ReverseDistance = -1;
@@ -3523,8 +3561,11 @@ namespace ORTS.Scripting.Script
                 if (SpeedMpS() < 0.1)
                 {
                     SetNextSignalAspect(Aspect.Approach_1);
-                    Messages.Add(new ETCSMessage("Modo TRIP", ClockTime(), () => ETCSPressed, 0, true));
-                    if (ETCSPressed)
+                    var m = new ETCSMessage("Modo TRIP", ClockTime(), () => false, 0, true);
+                    m.Revoke = () => m.Acknowledged;
+                    if (!Messages.Contains(m)) Messages.Add(m);
+                    var a = Messages.Find(x => x.Equals(m));
+                    if (a != null && a.Acknowledged)
                     {
                         CurrentETCSMode = ETCSMode.PT;
                         SetVigilanceAlarmDisplay(false);
@@ -3845,6 +3886,7 @@ namespace ORTS.Scripting.Script
                 if (MP.L_MAMODE[0] + MP.D_MAMODE[0] < dMinFront)
                 {
                     MP = null;
+                    AcknowledgeMP = false;
                 }
                 else
                 {
@@ -3863,12 +3905,15 @@ namespace ORTS.Scripting.Script
                                 TransitionMode = ETCSMode.LS;
                                 break;
                         }
-                        if (CurrentETCSMode != TransitionMode && !AcknowledgeMP)
+                        var m = new ETCSMessage("Reconocer modo " + TransitionMode.ToString(), ClockTime(), () => false, 0, true);
+                        if (CurrentETCSMode != TransitionMode && !AcknowledgeMP && !Messages.Contains(m))
                         {
                             AcknowledgeMP = true;
-                            Messages.Add(new ETCSMessage("Reconocer modo " + TransitionMode.ToString(), ClockTime(), () => ETCSPressed || !AcknowledgeMP, 0, true));
+                            m.Revoke = () => m.Acknowledged;
+                            if (!Messages.Contains(m)) Messages.Add(m);
                         }
-                        if (ETCSPressed)
+                        var a = Messages.Find(x => x.Equals(m));
+                        if (a != null && a.Acknowledged)
                         {
                             AcknowledgeMP = false;
                             CurrentETCSMode = TransitionMode;
