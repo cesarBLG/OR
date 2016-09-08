@@ -3067,9 +3067,10 @@ namespace ORTS.Scripting.Script
             {"Entering FS", "Entrada en FS"},
             {"Train TRIP", "Modo TRIP"},
             {"Unauthorized passing of EoA/LoA", "EoA o LoA rebasado"},
-            {"Balise data non consistent", "Datos de eurobaliza no consistentes" },
+            {"Balise read error", "Datos de eurobaliza no consistentes" },
             {"Acknowledge SR mode", "Reconocer modo SR"},
             {"Acknowledge OS mode", "Reconocer modo OS"},
+            {"Acknowledge UN mode", "Reconocer modo UN" },
             {"Emergency brake test: going", "Test de freno de emergencia: en curso" },
             {"Emergency brake test: completed", "Test de freno de emergencia: completado" },
             {"Service brake applied", "Freno de servicio aplicado" },
@@ -3443,6 +3444,8 @@ namespace ORTS.Scripting.Script
             SupervisedTargets();
             SpeedMonitors();
             ETCSCurves();
+            ETCSLinkingBrake &= SpeedMpS() > 0.1f;
+            ETCSServiceBrake |= ETCSLinkingBrake;
             ViewMessages();
             ETCSPressed = false;
 		}
@@ -3588,6 +3591,7 @@ namespace ORTS.Scripting.Script
                 else SetNextSignalAspect(Aspect.Stop);
             }
         }
+        bool ETCSLinkingBrake;
         protected void ManageBaliseData()
         {
             EBD = Eurobalise();
@@ -3598,14 +3602,15 @@ namespace ORTS.Scripting.Script
                 {
                     if (EBD.Q_LINK == 1 && link != null && ((link.NID_BG != EBD.NID_BG && link.D_LINK < dMaxFront && link.D_LINK < dMinFront) || (link.NID_BG == EBD.NID_BG && link.D_LINK > dMaxFront)))
                     {
-                        Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => CurrentETCSMode != ETCSMode.TR && CurrentETCSMode != ETCSMode.PT, 1, false));
                         switch (link.Q_LINKREACTION)
                         {
                             case 0:
+                                Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => CurrentETCSMode != ETCSMode.TR && CurrentETCSMode != ETCSMode.PT, 1, false));
                                 Trip();
                                 return;
                             case 1:
-                                ETCSServiceBrake = true;
+                                Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => ETCSLinkingBrake = false, 1, false));
+                                ETCSLinkingBrake = true;
                                 break;
                         }
                     }
@@ -3859,8 +3864,17 @@ namespace ORTS.Scripting.Script
             if(link!=null&&link.D_LINK<dMinFront)
             {
                 link = null;
-                Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => CurrentETCSMode != ETCSMode.TR && CurrentETCSMode != ETCSMode.PT, 1, false));
-                Trip();
+                switch (link.Q_LINKREACTION)
+                {
+                    case 0:
+                        Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => CurrentETCSMode != ETCSMode.TR && CurrentETCSMode != ETCSMode.PT, 1, false));
+                        Trip();
+                        return;
+                    case 1:
+                        Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => ETCSLinkingBrake = false, 1, false));
+                        ETCSLinkingBrake = true;
+                        break;
+                }
             }
             if (CurrentETCSMode == ETCSMode.SR )
             {
