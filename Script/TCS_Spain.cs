@@ -28,14 +28,17 @@ namespace ORTS.Scripting.Script
             Digital,
         }
         Tipo_ASFA TipoASFA;
+        
+        public Direction TrainDirection;
 
         bool ASFAInstalled;
         bool ASFADigitalInstalled;
         bool ETCSInstalled;
         bool ATFInstalled;
         bool ASFAActivated;
-        public bool LZBInstalled;
+        bool LZBInstalled;
         bool LZBActivated;
+        bool HMInhibited = false;
 
         public float TrainMaxSpeed;
 
@@ -57,6 +60,7 @@ namespace ORTS.Scripting.Script
         //ETCS
         public int ETCSInstalledLevel;
 
+        //ATF
         float LastMpS;
         float LastTime;
         float ATFAcceleration = 0;
@@ -64,20 +68,6 @@ namespace ORTS.Scripting.Script
         float ATFBrake = 0;
         bool ATFActivated = false;
         float ATFSpeed = 0;
-
-        //Hombre Muerto
-        float HMReleasedAlertDelayS;
-        float HMReleasedEmergencyDelayS;
-        float HMPressedAlertDelayS;
-        float HMPressedEmergencyDelayS;
-
-        bool HMInhibited = false;
-        bool HMEmergencyBraking = false;
-        bool HMPressed = false;
-        Timer HMPressedAlertTimer;
-        Timer HMPressedEmergencyTimer;
-        Timer HMReleasedAlertTimer;
-        Timer HMReleasedEmergencyTimer;
 
         bool ExternalEmergencyBraking;
 
@@ -115,8 +105,10 @@ namespace ORTS.Scripting.Script
         public ETCS ETCS;
         public ASFA ASFA;
         public LZB LZB;
+        public HM HM;
         public override void Initialize()
         {
+            TrainDirection = Direction.N;
             ASFAInstalled = GetBoolParameter("General", "ASFA", true);
             ETCSInstalled = GetBoolParameter("General", "ETCS", false);
             HMInhibited = GetBoolParameter("General", "HMInhibited", true);
@@ -160,22 +152,15 @@ namespace ORTS.Scripting.Script
                 ActiveCCS = CCS.ETCS;
                 ETCS = new ETCS(this);
             }
+            if(!HMInhibited)
+            {
+                HM = new HM(this);
+                HM.Initialize();
+            }
             TrainMaxSpeed = MpS.FromKpH(GetFloatParameter("General", "MaxSpeed", 380f));
             if(ASFA!=null) ASFA.TipoTren = MpS.FromKpH(GetFloatParameter("ASFA", "TipoTren", 250f));
             SerieTren = GetIntParameter("General", "Serie", 440);
             if (ASFA != null && ASFA.TipoTren > MpS.FromKpH(205f)) ASFA.TipoTren = TrainMaxSpeed;
-            HMReleasedAlertDelayS = 2.5f;
-            HMReleasedEmergencyDelayS = 5f;
-            HMPressedAlertDelayS = 32.5f;
-            HMPressedEmergencyDelayS = 35f;
-            HMPressedAlertTimer = new Timer(this);
-            HMPressedAlertTimer.Setup(HMPressedAlertDelayS);
-            HMPressedEmergencyTimer = new Timer(this);
-            HMPressedEmergencyTimer.Setup(HMPressedEmergencyDelayS);
-            HMReleasedAlertTimer = new Timer(this);
-            HMReleasedAlertTimer.Setup(HMReleasedAlertDelayS);
-            HMReleasedEmergencyTimer = new Timer(this);
-            HMReleasedEmergencyTimer.Setup(HMReleasedEmergencyDelayS);
 
             Activated = true;
             PreviousSignalDistanceM = 0f;
@@ -188,6 +173,7 @@ namespace ORTS.Scripting.Script
         public bool LineaConvencional;
         public override void Update()
         {
+            if (IsDirectionReverse()) TrainDirection = Direction.Reverse;
             LineaConvencional = true;
             if (CurrentPostSpeedLimitMpS() > MpS.FromKpH(200)) LineaConvencional = false;
             for (int i = 0; i < 5; i++)
@@ -198,7 +184,11 @@ namespace ORTS.Scripting.Script
             UpdateDistanciaPrevia();
             UpdatePostPassed();
             UpdateAnuncioLTVPassed();
-            if (!HMInhibited && (ASFA==null||!ASFA.Activated) && !ETCSInstalled && !ATFActivated) UpdateHM();
+            if (HM != null)
+            {
+                HM.Activated = true;
+                HM.Update();
+            }
             else if (AlerterSound()) SetVigilanceAlarm(false);
             Arduino();
             if (!IsTrainControlEnabled())
@@ -275,8 +265,8 @@ namespace ORTS.Scripting.Script
             }
             SetPenaltyApplicationDisplay((ASFA!=null && ASFA.Urgencia) || (ETCS!=null&&(ETCS.EmergencyBraking || ETCS.ServiceBrake)) || (LZB!=null && LZB.LZBOE));
             SetFullBrake((ETCS != null && ETCS.ServiceBrake && !ETCS.EmergencyBraking) || ATFFullBrake);
-            SetEmergencyBrake((ASFA!=null && ASFA.Urgencia) || (ETCS!=null && ETCS.EmergencyBraking) || HMEmergencyBraking || (LZB != null && LZB.LZBEmergencyBrake));
-            SetTractionAuthorization((ASFA == null || !ASFA.Urgencia) && (ETCS == null || (!ETCS.TCO && !ETCS.EmergencyBraking && !ETCS.ServiceBrake)) && !HMEmergencyBraking && (LZB == null || !LZB.LZBEmergencyBrake));
+            SetEmergencyBrake((ASFA!=null && ASFA.Urgencia) || (ETCS!=null && ETCS.EmergencyBraking) || (HM!=null && HM.HMEmergencyBraking) || (LZB != null && LZB.LZBEmergencyBrake));
+            SetTractionAuthorization((ASFA == null || !ASFA.Urgencia) && (ETCS == null || (!ETCS.TCO && !ETCS.EmergencyBraking && !ETCS.ServiceBrake)) && (HM == null || !HM.HMEmergencyBraking) && (LZB == null || !LZB.LZBEmergencyBrake));
             bool ETCSNeutralZone = false;
             bool ETCSLowerPantographs = false;
             SetPowerAuthorization(!ETCSNeutralZone);
@@ -696,80 +686,25 @@ namespace ORTS.Scripting.Script
         }
 		public override void HandleEvent(TCSEvent evt, string message)
    		{
-			switch (evt)
+            switch (evt)
             {
-                case TCSEvent.AlerterPressed:
-                    HMPressed = true;
-                    break;
-                case TCSEvent.AlerterReleased:
-                    HMPressed = false;
+                case TCSEvent.ReverserChanged:
+                    switch (TrainDirection)
+                    {
+                        case Direction.Forward:
+                        case Direction.Reverse:
+                            TrainDirection = Direction.N;
+                            break;
+                        case Direction.N:
+                            TrainDirection = IsDirectionReverse() ? Direction.Reverse : Direction.Forward;
+                            break;
+                    }
                     break;
             }
             if (ASFA != null) ASFA.HandleEvent(evt, message);
             if (ETCS != null) ETCS.HandleEvent(evt, message);
             if (LZB != null) LZB.HandleEvent(evt, message);
-        }
-		protected void UpdateHM()
-        {
-            if (!Activated || !IsAlerterEnabled()
-#if _OR_PERS
-                || Locomotive.Direction == Direction.N
-#endif
-                )
-            {
-                HMReleasedAlertTimer.Stop();
-                HMReleasedEmergencyTimer.Stop();
-                HMPressedAlertTimer.Stop();
-                HMPressedEmergencyTimer.Stop();
-                HMEmergencyBraking = false;
-				if (AlerterSound()) SetVigilanceAlarm(false);
-				SetVigilanceAlarmDisplay(false);
-				SetVigilanceEmergencyDisplay(false);
-                return;
-            }
-            if (HMPressed && (!HMPressedAlertTimer.Started || !HMPressedEmergencyTimer.Started))
-            {
-                HMReleasedAlertTimer.Stop();
-                HMReleasedEmergencyTimer.Stop();
-                HMPressedAlertTimer.Start();
-                HMPressedEmergencyTimer.Start();
-				if (!AlerterSound()) SetVigilanceAlarm(false);
-				SetVigilanceAlarmDisplay(false);
-            }
-			if(HMPressed && HMPressedAlertTimer.RemainingValue<2.5f)
-			{
-				SetVigilanceAlarmDisplay(true);
-			}
-            if (!HMPressed && (!HMReleasedAlertTimer.Started || !HMReleasedEmergencyTimer.Started))
-            {
-                HMReleasedAlertTimer.Start();
-                HMReleasedEmergencyTimer.Start();
-                HMPressedAlertTimer.Stop();
-                HMPressedEmergencyTimer.Stop();
-				if (AlerterSound()) SetVigilanceAlarm(false);
-				SetVigilanceAlarmDisplay(true);
-            }
-            if (HMReleasedAlertTimer.Triggered || HMPressedAlertTimer.Triggered)
-			{
-				if (!AlerterSound()) SetVigilanceAlarm(true);
-				SetVigilanceAlarmDisplay(true);
-			}
-			else
-			{
-				if (AlerterSound()) SetVigilanceAlarm(false);
-			}
-            if (!HMEmergencyBraking && (HMPressedEmergencyTimer.Triggered || HMReleasedEmergencyTimer.Triggered))
-            {
-                HMEmergencyBraking = true;
-				if (AlerterSound()) SetVigilanceAlarm(false);
-				SetVigilanceAlarmDisplay(false);
-                SetVigilanceEmergencyDisplay(true);
-            }
-            if (HMEmergencyBraking && SpeedMpS() < 1.5f)
-            {
-                HMEmergencyBraking = false;
-                SetVigilanceEmergencyDisplay(false);
-            }
+            if (HM != null) HM.HandleEvent(evt, message);
         }
 		protected void UpdateSignalPassed()
         {
@@ -6340,6 +6275,119 @@ namespace ORTS.Scripting.Script
 #if _OR_PERS
             SetReleaseSpeedMpS(ETCSVrelease);
 #endif
+        }
+    }
+    public class HM : TrainControlSystem
+    {
+        TrainControlSystem tcs;
+
+        float HMReleasedAlertDelayS;
+        float HMReleasedEmergencyDelayS;
+        float HMPressedAlertDelayS;
+        float HMPressedEmergencyDelayS;
+
+        public bool HMEmergencyBraking = false;
+        bool Pressed = false;
+        Timer HMPressedAlertTimer;
+        Timer HMPressedEmergencyTimer;
+        Timer HMReleasedAlertTimer;
+        Timer HMReleasedEmergencyTimer;
+
+        public HM(TrainControlSystem tcs)
+        {
+            this.tcs = tcs;
+            SetVigilanceAlarm = tcs.SetVigilanceAlarm;
+            SetVigilanceAlarmDisplay = tcs.SetVigilanceAlarmDisplay;
+            SetVigilanceEmergencyDisplay = tcs.SetVigilanceEmergencyDisplay;
+        }
+        public override void SetEmergency(bool emergency)
+        {
+            throw new NotImplementedException();
+        }
+        public override void HandleEvent(TCSEvent evt, string message)
+        {
+            switch(evt)
+            {
+                case TCSEvent.AlerterPressed:
+                    Pressed = true;
+                    break;
+                case TCSEvent.AlerterReleased:
+                    Pressed = false;
+                    break;
+            }
+        }
+        public override void Initialize()
+        {
+            HMReleasedAlertDelayS = 2.5f;
+            HMReleasedEmergencyDelayS = 5f;
+            HMPressedAlertDelayS = 32.5f;
+            HMPressedEmergencyDelayS = 35f;
+            HMPressedAlertTimer = new Timer(tcs);
+            HMPressedAlertTimer.Setup(HMPressedAlertDelayS);
+            HMPressedEmergencyTimer = new Timer(tcs);
+            HMPressedEmergencyTimer.Setup(HMPressedEmergencyDelayS);
+            HMReleasedAlertTimer = new Timer(tcs);
+            HMReleasedAlertTimer.Setup(HMReleasedAlertDelayS);
+            HMReleasedEmergencyTimer = new Timer(tcs);
+            HMReleasedEmergencyTimer.Setup(HMReleasedEmergencyDelayS);
+        }
+        public override void Update()
+        {
+            if (!Activated || !tcs.IsAlerterEnabled() || (tcs as TCS_Spain).TrainDirection == Direction.N)
+            {
+                HMReleasedAlertTimer.Stop();
+                HMReleasedEmergencyTimer.Stop();
+                HMPressedAlertTimer.Stop();
+                HMPressedEmergencyTimer.Stop();
+                HMEmergencyBraking = false;
+                if (tcs.AlerterSound()) SetVigilanceAlarm(false);
+                SetVigilanceAlarmDisplay(false);
+                SetVigilanceEmergencyDisplay(false);
+                return;
+            }
+            if (Pressed && (!HMPressedAlertTimer.Started || !HMPressedEmergencyTimer.Started))
+            {
+                HMReleasedAlertTimer.Stop();
+                HMReleasedEmergencyTimer.Stop();
+                HMPressedAlertTimer.Start();
+                HMPressedEmergencyTimer.Start();
+                if (!tcs.AlerterSound()) SetVigilanceAlarm(false);
+                SetVigilanceAlarmDisplay(false);
+            }
+            if (Pressed && HMPressedAlertTimer.RemainingValue < 2.5f)
+            {
+                SetVigilanceAlarmDisplay(true);
+            }
+            if (!Pressed && (!HMReleasedAlertTimer.Started || !HMReleasedEmergencyTimer.Started))
+            {
+                HMReleasedAlertTimer.Start();
+                HMReleasedEmergencyTimer.Start();
+                HMPressedAlertTimer.Stop();
+                HMPressedEmergencyTimer.Stop();
+                if (tcs.AlerterSound()) SetVigilanceAlarm(false);
+                SetVigilanceAlarmDisplay(true);
+            }
+            if (HMReleasedAlertTimer.Triggered || HMPressedAlertTimer.Triggered)
+            {
+                if (!tcs.AlerterSound()) SetVigilanceAlarm(true);
+                SetVigilanceAlarmDisplay(true);
+            }
+            else
+            {
+                if (tcs.AlerterSound()) SetVigilanceAlarm(false);
+            }
+            if (!HMEmergencyBraking && (HMPressedEmergencyTimer.Triggered || HMReleasedEmergencyTimer.Triggered))
+            {
+                HMEmergencyBraking = true;
+                if (tcs.AlerterSound()) SetVigilanceAlarm(false);
+                SetVigilanceAlarmDisplay(false);
+                SetVigilanceEmergencyDisplay(true);
+            }
+            if (HMEmergencyBraking && SpeedMpS() < 1.5f)
+            {
+                HMEmergencyBraking = false;
+                SetVigilanceEmergencyDisplay(false);
+            }
         }
     }
 }
