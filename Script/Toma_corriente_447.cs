@@ -161,6 +161,7 @@ namespace ORTS.Scripting.Script
             if (Convertidor_Estático.State != PowerSupplyState.PowerOn && CurrentAuxiliaryState()==PowerSupplyState.PowerOn && Contactor_bateria) Battery.Get(1800f, elapsedClockSeconds);
             if (Convertidor_Estático.State == PowerSupplyState.PowerOn && Contactor_bateria) Cargador_Batería.Charge(ref Battery, ClockTime());
             SetFilterVoltageV(CurrentCircuitBreakerState() == CircuitBreakerState.Closed ? RealLineVoltageV : Battery.VoltageV);
+            SetPantographVoltageV(FilterVoltageV());
         }
     }
 }
