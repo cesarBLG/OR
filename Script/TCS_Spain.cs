@@ -114,6 +114,7 @@ namespace ORTS.Scripting.Script
         public TCS_Spain() { }
         public ETCS ETCS;
         public ASFA ASFA;
+        public LZB LZB;
         public override void Initialize()
         {
             ASFAInstalled = GetBoolParameter("General", "ASFA", true);
@@ -151,15 +152,8 @@ namespace ORTS.Scripting.Script
             }
             if (LZBInstalled)
             {
-                LZBCenter = new LZBCenter(!GetBoolParameter("LZB", "Canton_Movil", false));
                 ActiveCCS = CCS.LZB;
-                LZBAlertarLiberar();
-                LZBSupervising = true;
-                LZBRecTimer = new Timer(this);
-                LZBRecTimer.Setup(8);
-                LZBCurveTimer = new Timer(this);
-                LZBVTimer = new Timer(this);
-                LZBVTimer.Setup(0.5f);
+                LZB = new LZB(this);
             }
             if (ETCSInstalled)
             {
@@ -189,6 +183,7 @@ namespace ORTS.Scripting.Script
 
             if(ASFA != null) ASFA.Initialize();
             if(ETCS != null) ETCS.Initialize();
+            if (LZB != null) LZB.Initialize();
         }
         public bool LineaConvencional;
         public override void Update()
@@ -221,10 +216,10 @@ namespace ORTS.Scripting.Script
                     else SetCurrentSpeedLimitMpS(TrainMaxSpeed);
                 }
             }
-            if (LZBInstalled && (!ETCSInstalled || ETCS.CurrentMode == ETCS.Mode.IS))
+            if (LZBInstalled)
             {
-                UpdateLZB();
-                if (LZBSupervising)
+                LZB.Update();
+                if (LZB.LZBSupervising)
                 {
                     ActiveCCS = CCS.LZB;
                     if (ASFAInstalled)
@@ -248,11 +243,11 @@ namespace ORTS.Scripting.Script
 #if _OR_PERS
                 VelocidadPrefijada = Locomotive.ThrottleController.CurrentValue * TrainMaxSpeed;
 #endif
-                if (LZBSupervising && (BrakePipePressureBar() > 4.8 || LZBEmergencyBrake || ATFFullBrake))
+                if (LZB != null && LZB.LZBSupervising && (BrakePipePressureBar() > 4.8 || LZB.LZBEmergencyBrake || ATFFullBrake))
                 {
                     ATFActivated = true;
-                    ATFSpeed = LZBMaxSpeed;
-                    if (LZBTargetDistance < 15 && SpeedMpS() < 4 && LZBTargetSpeed == 0) ATFSpeed = 0;
+                    ATFSpeed = LZB.LZBMaxSpeed;
+                    if (LZB.LZBTargetDistance < 15 && SpeedMpS() < 4 && LZB.LZBTargetSpeed == 0) ATFSpeed = 0;
                 }
                 if (ETCS != null && ETCS.CurrentMode == ETCS.Mode.FS && ETCS.Vperm > ETCS.Vrelease && SpeedMpS() > 0.1 && (BrakePipePressureBar() > 4.8 || ETCS.EmergencyBraking || ETCS.ServiceBrake || ATFFullBrake))
                 {
@@ -265,7 +260,7 @@ namespace ORTS.Scripting.Script
                     ATFSpeed = Math.Min(VelocidadPrefijada, ATFSpeed);
                     if (ActiveCCS != CCS.ETCS && ActiveCCS != CCS.LZB) SetCurrentSpeedLimitMpS(VelocidadPrefijada);
                 }
-                if (ATFActivated && VelocidadPrefijada < 1 && (ETCS == null || ETCS.CurrentMode != ETCS.Mode.FS || SpeedMpS() < 0.1 || ETCS.Vrelease > ETCS.Vperm || (BrakePipePressureBar() < 4.8 && !ETCS.EmergencyBraking && !ETCS.ServiceBrake && !ATFFullBrake)) && (!LZBSupervising /*|| SpeedMpS() < 1 */|| (BrakePipePressureBar() < 4.8 && !LZBEmergencyBrake && !ATFFullBrake)))
+                if (ATFActivated && VelocidadPrefijada < 1 && (ETCS == null || ETCS.CurrentMode != ETCS.Mode.FS || SpeedMpS() < 0.1 || ETCS.Vrelease > ETCS.Vperm || (BrakePipePressureBar() < 4.8 && !ETCS.EmergencyBraking && !ETCS.ServiceBrake && !ATFFullBrake)) && (LZB == null || !LZB.LZBSupervising /*|| SpeedMpS() < 1 */|| (BrakePipePressureBar() < 4.8 && !LZB.LZBEmergencyBrake && !ATFFullBrake)))
                 {
                     ATFActivated = false;
                     ATFFullBrake = false;
@@ -278,16 +273,16 @@ namespace ORTS.Scripting.Script
                 }
                 if (ATFActivated) ATF(ATFSpeed);
             }
-            SetPenaltyApplicationDisplay((ASFA!=null && ASFA.Urgencia) || (ETCS!=null&&(ETCS.EmergencyBraking || ETCS.ServiceBrake)) || LZBOE);
+            SetPenaltyApplicationDisplay((ASFA!=null && ASFA.Urgencia) || (ETCS!=null&&(ETCS.EmergencyBraking || ETCS.ServiceBrake)) || (LZB!=null && LZB.LZBOE));
             SetFullBrake((ETCS != null && ETCS.ServiceBrake && !ETCS.EmergencyBraking) || ATFFullBrake);
-            SetEmergencyBrake((ASFA!=null && ASFA.Urgencia) || (ETCS!=null && ETCS.EmergencyBraking) || HMEmergencyBraking || LZBEmergencyBrake);
-            SetTractionAuthorization((ASFA == null || !ASFA.Urgencia) && (ETCS == null || (!ETCS.TCO && !ETCS.EmergencyBraking && !ETCS.ServiceBrake)) && !HMEmergencyBraking && !LZBEmergencyBrake);
+            SetEmergencyBrake((ASFA!=null && ASFA.Urgencia) || (ETCS!=null && ETCS.EmergencyBraking) || HMEmergencyBraking || (LZB != null && LZB.LZBEmergencyBrake));
+            SetTractionAuthorization((ASFA == null || !ASFA.Urgencia) && (ETCS == null || (!ETCS.TCO && !ETCS.EmergencyBraking && !ETCS.ServiceBrake)) && !HMEmergencyBraking && (LZB == null || !LZB.LZBEmergencyBrake));
             bool ETCSNeutralZone = false;
             bool ETCSLowerPantographs = false;
             SetPowerAuthorization(!ETCSNeutralZone);
             if (ETCSLowerPantographs) SetPantographsDown();
         }
-        string ArduinoPort = null;
+        public string ArduinoPort = null;
         SerialPort sp;
         float PreviousTime = 0;
         float LastConex = 0;
@@ -419,270 +414,6 @@ namespace ORTS.Scripting.Script
                 }
             }
         }
-        Aspect LZBLastAspect;
-        Aspect LZBPreviousAspect;
-        bool LZBLiberar;
-        bool LZBRebasar;
-        bool LZBAnularParada;
-        bool LZBSupervising;
-        public bool LZBEmergencyBrake;
-        public bool LZBOE;
-        int LZBPar = -1;
-        float LZBMaxDistance = 4000;
-        float LZBLT;
-        float LZBPFT;
-        float LZBVMT;
-        LZBTrain LZBTR = null;
-        bool PruebaFuncional;
-        float LZBLastDistance;
-        float LZBLastSigDistance;
-        float LZBLastTime;
-        float LZBSpeedLimit = 0;
-        float LZBSupervisionLimit = 0;
-        float LZBMaxSpeed = 0;
-        float LZBTargetSpeed = 0;
-        float LZBTargetDistance = 0;
-        float LZBDeceleration = 0.5f;
-        LZBCenter LZBCenter;
-        bool LZBAhorroEnergia = false;
-        bool LZBEnd;
-        bool LZBVOn;
-        bool LZBV;
-        Timer LZBRecTimer;
-        Timer LZBCurveTimer;
-        Timer LZBVTimer;
-        public void UpdateLZB()
-        {
-            LZBEmergencyBrake = false;
-            LZBRebasar = ASFA.RebasePressed;
-            LZBLiberar = ASFA.Pressed;
-            LZBAnularParada = (ASFA as ASFADigital).ModoPressed && SerieTren == 446;
-            if ((ASFA as ASFADigital).ModoPressed)
-            {
-                (ASFA as ASFADigital).TimesPressed = 0;
-                (ASFA as ASFADigital).ModoPressed = false;
-            }
-            if ((DateTime.Now.DayOfWeek == DayOfWeek.Saturday || DateTime.Now.DayOfWeek == DayOfWeek.Sunday) && SerieTren == 446)
-            {
-                LZBAhorroEnergia = true;
-            }
-            else LZBAhorroEnergia = false;
-            if (((LZBLiberar && !LZBOE && SerieTren == 446) || (SignalPassed && !LZBOE && SerieTren != 446)) && !LZBSupervising)
-            {
-                LZBSupervising = true;
-                LZBTR = null;
-            }
-            if (LZBRebasar)
-            {
-                LZBSupervising = LZBOE;
-                LZBOE = false;
-                LZBEmergencyBrake = false;
-                ASFA.RebasePressed = false;
-                ASFA.Pressed = false;
-                ASFA.BotonesASFA();
-                if (SerieTren == 446) LZBSupervising = false;
-                else
-                {
-                    LZBTargetSpeed = LZBMaxSpeed = LZBSpeedLimit = MpS.FromKpH(40);
-                    SetNextSpeedLimitMpS(LZBTargetSpeed);
-                }
-            }
-            if (LZBSupervising && (NextSignalDistanceM(0) > 0 || DistanceM() > 0))
-            {
-                SetVigilanceAlarmDisplay(true);
-                int i;
-                for (i = 0; i < 5 && NextSignalAspect(i) != Aspect.Stop; i++) ;
-                if (NextSignalAspect(i) == Aspect.Stop && NextSignalDistanceM(i) > 0 && !LZBCenter.SobreEnclavamientos)
-                {
-                    LZBCenter.Com(new LZBTrain(MpS.FromKpH(300), 4, 41, 0, (Math.Abs(LZBLastSigDistance - NextSignalDistanceM(i) - (DistanceM() - LZBLastDistance))) / (ClockTime() - LZBLastTime), new LZBPosition(DistanceM() + NextSignalDistanceM(i), false), 2, this));
-                }
-                if (LZBTR == null)
-                {
-                    LZBAlertarLiberar();
-                    LZBTR = new LZBTrain(LZBVMT, 7, LZBPFT, LZBLT, SpeedMpS(), new LZBPosition(DistanceM(), false), 1, this);
-#if _OR_PERS
-                    foreach (var stop in Locomotive.Train.StationStops)
-                    {
-                        LZBTR.Stops.Add(stop.DistanceToTrainM + DistanceM());
-                    }
-#else
-                    if (SerieTren == 446)
-                    {
-                        float a = 75 - LZBLT;
-                        LZBTR.Stops.Add(3360 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(6771 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(12342 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(15654 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(18837 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(21413 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(24447 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(27059 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(28398 - 37.5f + LZBLT / 2f + a);
-                        LZBTR.Stops.Add(34349 + a);
-                    }
-#endif
-                    LZBTR = LZBCenter.Com(LZBTR);
-                }
-                else if (LZBTR.Position.PK + LZBTR.Profile.TargetDistance <= DistanceM() && LZBTR.Profile.TargetSpeed < 0.1f) LZBOE = true;
-                LZBTR.Speed = SpeedMpS();
-                LZBTR.Position.PK = DistanceM();
-                var tr = LZBCenter.Com(LZBTR);
-                if (tr == null)
-                {
-                    SetVigilanceEmergencyDisplay(true);
-                    if (SerieTren == 446)
-                    {
-                        if (SpeedCurve(LZBTargetDistance - 350, LZBTargetSpeed, 0, 0, LZBPFT / 250) < LZBSpeedLimit)
-                        {
-                            //Curva de frenado
-                        }
-                        else
-                        {
-                            //Sin curva de frenado
-                        }
-                    }
-                    else
-                    {
-                        if (Math.Abs(LZBTR.NextTrain.Position.PK - LZBTR.Position.PK) < NextSignalDistanceM(0))
-                        {
-                            //Bloqueo parcial
-                        }
-                        else
-                        {
-                            //Bloqueo total
-                        }
-                    }
-                }
-                else
-                {
-                    LZBTR = tr;
-                    SetVigilanceEmergencyDisplay(false);
-                }
-                LZBTargetSpeed = LZBTR.Profile.TargetSpeed;
-                LZBTargetDistance = LZBTR.Profile.TargetDistance;
-                LZBSpeedLimit = LZBTR.Profile.SpeedLimit;
-                LZBSupervisionLimit = SpeedCurve(LZBTargetDistance, LZBTargetSpeed, 0, 0, LZBPFT / 100);
-                LZBV = (LZBTargetDistance < 350 || SpeedCurve(LZBTargetDistance - 350, LZBTargetSpeed, 0, 0, LZBPFT / 250) <= LZBSpeedLimit) && LZBTargetSpeed < LZBSpeedLimit;
-                if (LZBTR.Profile.End && LZBTR.Profile.TargetDistance < 1700)
-                {
-                    if (!LZBEnd)
-                    {
-                        LZBRecTimer.Setup(10);
-                        LZBRecTimer.Start();
-                        TriggerSoundInfo1();
-                    }
-                    LZBEnd = true;
-                    if (LZBRecTimer.Triggered)
-                    {
-                        LZBCurveTimer.Setup((LZBSpeedLimit - 3.75f) / 1.25f);
-                        LZBCurveTimer.Start();
-                        LZBRecTimer.Stop();
-                        LZBEmergencyBrake = true;
-                    }
-                    if (LZBCurveTimer.Started)
-                    {
-                        LZBSpeedLimit = LZBSpeedLimit - 3.75f - 1.25f * (int)(LZBCurveTimer.AlarmValue - LZBCurveTimer.RemainingValue);
-                    }
-                    if (LZBLiberar)
-                    {
-                        LZBRecTimer.Stop();
-                        LZBCurveTimer.Stop();
-                    }
-                    if (LZBTR.Profile.TargetDistance < 10)
-                    {
-                        LZBSupervising = false;
-                        LZBEnd = false;
-                    }
-                }
-                LZBSupervisionLimit = Math.Min(LZBSpeedLimit * 1.05f + 1, LZBSupervisionLimit);
-                LZBMaxSpeed = LZBAhorroEnergia ? LZBSpeedLimit * 0.8f : LZBSpeedLimit;
-                if (LZBOE)
-                {
-                    LZBMaxSpeed = LZBSpeedLimit = LZBTargetDistance = LZBTargetSpeed = 0;
-                }
-                if (LZBAnularParada && LZBTR.Stops.Count != 0) LZBTR.Stops.RemoveAt(0);
-                if (LZBTargetDistance > LZBMaxDistance) SetNextSignalAspect(Aspect.Clear_2);
-                else SetNextSignalAspect(Aspect.Stop);
-                if (LZBSupervisionLimit < SpeedMpS() || LZBOE) LZBEmergencyBrake = true;
-                if (ActiveCCS == CCS.LZB && (!ETCSInstalled || ETCS.CurrentMode == ETCS.Mode.IS))
-                {
-                    if (LZBTargetDistance < LZBMaxDistance)
-                    {
-                        SetNextSpeedLimitMpS(LZBTargetSpeed);
-                        SetCurrentSpeedLimitMpS(MpS.FromKpH(LZBTargetDistance));
-                    }
-                    else
-                    {
-                        SetNextSpeedLimitMpS(LZBSpeedLimit);
-                        SetCurrentSpeedLimitMpS(MpS.FromKpH(LZBMaxDistance));
-                    }
-                }
-                if (SpeedMpS() > LZBSpeedLimit)
-                {
-                    if (LZBVTimer.Triggered || !LZBVTimer.Started)
-                    {
-                        LZBVOn = !LZBVOn;
-                        LZBVTimer.Start();
-                    }
-                }
-                else
-                {
-                    LZBVTimer.Stop();
-                    LZBVOn = LZBV && LZBSpeedLimit - SpeedMpS() < MpS.FromKpH(30);
-                }
-                if (LZBAhorroEnergia) SetNextSignalAspect(Aspect.Clear_1);
-                else SetNextSignalAspect(Aspect.Clear_2);
-                SetOverspeedWarningDisplay(LZBVOn);
-                LZBPreviousAspect = NextSignalAspect(i);
-                LZBLastSigDistance = NextSignalDistanceM(i);
-                LZBLastDistance = DistanceM();
-                LZBLastTime = ClockTime();
-            }
-            else if (ActiveCCS == CCS.LZB)
-            {
-                SetVigilanceAlarmDisplay(false);
-                SetCurrentSpeedLimitMpS(0);
-                SetNextSpeedLimitMpS(0);
-            }
-        }
-        public void LZBAlertarLiberar()
-        {
-            LZBVMT = TrainMaxSpeed;
-            if (LZBVMT < MpS.FromKpH(101)) LZBMaxDistance = 2000;
-            else if (LZBVMT < MpS.FromKpH(161)) LZBMaxDistance = 4000;
-            else if (LZBVMT < MpS.FromKpH(201)) LZBMaxDistance = 9900;
-            else LZBMaxDistance = 12000;
-            LZBLT = TrainLengthM();
-            if (SerieTren == 446)
-            {
-                int LZBDec = 0;
-                switch (LZBDec)
-                {
-                    case 0:
-                        LZBPFT = 124;
-                        break;
-                    case 1:
-                        LZBPFT = 103;
-                        break;
-                    case 2:
-                        LZBPFT = 96;
-                        break;
-                    case 3:
-                        LZBPFT = 89;
-                        break;
-                    case 4:
-                        LZBPFT = 82;
-                        break;
-                    case 7:
-                        LZBPFT = 60;
-                        LZBVMT = MpS.FromKpH(30);
-                        break;
-                }
-            }
-            else LZBPFT = 75;
-        }
-        
-        
         public class OnBoardMA
         {
             public int Q_DIR;
@@ -976,6 +707,7 @@ namespace ORTS.Scripting.Script
             }
             if (ASFA != null) ASFA.HandleEvent(evt, message);
             if (ETCS != null) ETCS.HandleEvent(evt, message);
+            if (LZB != null) LZB.HandleEvent(evt, message);
         }
 		protected void UpdateHM()
         {
@@ -1457,6 +1189,395 @@ namespace ORTS.Scripting.Script
             this.Q_LOCACC = Q_LOCACC;
         }
     }
+    public class LZB : TrainControlSystem
+    {
+        Aspect LZBLastAspect;
+        Aspect LZBPreviousAspect;
+        bool LZBLiberar;
+        bool LZBRebasar;
+        bool LZBAnularParada;
+        public bool LZBSupervising;
+        public bool LZBEmergencyBrake;
+        public bool LZBOE;
+        int LZBPar = -1;
+        float LZBMaxDistance = 4000;
+        float LZBLT;
+        float LZBPFT;
+        float LZBVMT;
+        LZBTrain LZBTR = null;
+        bool PruebaFuncional;
+        float LZBLastDistance;
+        float LZBLastSigDistance;
+        float LZBLastTime;
+        float LZBSpeedLimit = 0;
+        float LZBSupervisionLimit = 0;
+        public float LZBMaxSpeed = 0;
+        public float LZBTargetSpeed = 0;
+        public float LZBTargetDistance = 0;
+        float LZBDeceleration = 0.5f;
+        LZBCenter LZBCenter;
+        bool LZBAhorroEnergia = false;
+        bool LZBEnd;
+        bool LZBVOn;
+        bool LZBV;
+        Timer LZBRecTimer;
+        Timer LZBCurveTimer;
+        Timer LZBVTimer;
+
+        TCS_Spain tcs;
+
+        bool Pressed;
+        public LZB(TrainControlSystem tcss)
+        {
+            tcs = tcss as TCS_Spain;
+            // AbstractScriptClass
+            ClockTime = () => tcs.ClockTime();
+            DistanceM = () => tcs.DistanceM();
+
+            // TrainControlSystem
+            IsTrainControlEnabled = tcs.IsTrainControlEnabled;
+            IsDirectionReverse = tcs.IsDirectionReverse;
+            IsBrakeEmergency = tcs.IsBrakeEmergency;
+            IsBrakeFullService = tcs.IsBrakeFullService;
+            PowerAuthorization = tcs.PowerAuthorization;
+            TrainLengthM = tcs.TrainLengthM;
+            SpeedMpS = tcs.SpeedMpS;
+            BrakePipePressureBar = tcs.BrakePipePressureBar;
+            CurrentSignalSpeedLimitMpS = tcs.CurrentSignalSpeedLimitMpS;
+            CurrentPostSpeedLimitMpS = tcs.CurrentPostSpeedLimitMpS;
+            IsAlerterEnabled = tcs.IsAlerterEnabled;
+            AlerterSound = tcs.AlerterSound;
+            SetHorn = (value) => { };
+            SetFullBrake = (value) =>
+            {
+            };
+            SetEmergencyBrake = (value) =>
+            {
+                LZBEmergencyBrake = true;
+            };
+            SetThrottleController = (value) => { };
+            SetDynamicBrakeController = (value) => { };
+            SetVigilanceAlarmDisplay = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetVigilanceAlarmDisplay(value); };
+            SetVigilanceEmergencyDisplay = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetVigilanceEmergencyDisplay(value); };
+            SetOverspeedWarningDisplay = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetOverspeedWarningDisplay(value); };
+            SetPenaltyApplicationDisplay = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetPenaltyApplicationDisplay(value); };
+            SetMonitoringStatus = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetMonitoringStatus(value); };
+            SetCurrentSpeedLimitMpS = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetCurrentSpeedLimitMpS(value); };
+            SetNextSpeedLimitMpS = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetNextSpeedLimitMpS(value); };
+            SetInterventionSpeedLimitMpS = (value) => { };
+            SetNextSignalAspect = (value) => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.SetNextSignalAspect(value); };
+            TriggerSoundAlert1 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundAlert1(); };
+            TriggerSoundAlert2 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundAlert2(); };
+            TriggerSoundInfo1 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundInfo1(); };
+            TriggerSoundInfo2 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundInfo2(); };
+            TriggerSoundPenalty1 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundPenalty1(); };
+            TriggerSoundPenalty2 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundPenalty2(); };
+            TriggerSoundWarning1 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundWarning1(); };
+            TriggerSoundWarning2 = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundWarning2(); };
+            TriggerSoundSystemActivate = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundSystemActivate(); };
+            TriggerSoundSystemDeactivate = () => { if (tcs.ActiveCCS == TCS_Spain.CCS.LZB) tcs.TriggerSoundSystemDeactivate(); };
+            TrainSpeedLimitMpS = tcs.TrainSpeedLimitMpS;
+            NextSignalSpeedLimitMpS = tcs.NextSignalSpeedLimitMpS;
+            NextSignalAspect = tcs.NextSignalAspect;
+            NextSignalDistanceM = tcs.NextSignalDistanceM;
+            NextPostSpeedLimitMpS = tcs.NextPostSpeedLimitMpS;
+            NextPostDistanceM = tcs.NextPostDistanceM;
+
+            SpeedCurve = tcs.SpeedCurve;
+            DistanceCurve = tcs.DistanceCurve;
+            Deceleration = tcs.Deceleration;
+            SetPantographsDown = () =>
+            {
+
+            };
+            SetPowerAuthorization = (value) =>
+            {
+
+            };
+            GetBoolParameter = tcs.GetBoolParameter;
+            GetIntParameter = tcs.GetIntParameter;
+            GetFloatParameter = tcs.GetFloatParameter;
+            GetStringParameter = tcs.GetStringParameter;
+        }
+        public override void Initialize()
+        {
+            LZBCenter = new LZBCenter(!GetBoolParameter("LZB", "Canton_Movil", false));
+            LZBAlertarLiberar();
+            LZBSupervising = true;
+            LZBRecTimer = new Timer(tcs);
+            LZBRecTimer.Setup(8);
+            LZBCurveTimer = new Timer(tcs);
+            LZBVTimer = new Timer(tcs);
+            LZBVTimer.Setup(0.5f);
+
+            PressedTimer = new Timer(tcs);
+            PressedTimer.Setup(3);
+            ButtonsTimer = new Timer(tcs);
+            ButtonsTimer.Setup(0.3f);
+        }
+        public override void SetEmergency(bool emergency)
+        {
+            throw new NotImplementedException();
+        }
+        public override void HandleEvent(TCSEvent evt, string message)
+        {
+            switch(evt)
+            {
+                case TCSEvent.AlerterPressed:
+                    Pressed = true;
+                    break;
+                case TCSEvent.AlerterReleased:
+                    Pressed = false;
+                    break;
+            }
+        }
+        Timer PressedTimer;
+        int TimesPressed;
+        Timer ButtonsTimer;
+        public void Botones()
+        {
+            LZBLiberar = Pressed;
+            if (Pressed && !PressedTimer.Started)
+            {
+                TimesPressed++;
+                ButtonsTimer.Stop();
+            }
+            if (TimesPressed != 0 && !Pressed && !ButtonsTimer.Started) ButtonsTimer.Start();
+            if (ButtonsTimer.Triggered) TimesPressed = 0;
+            LZBAnularParada = Pressed && TimesPressed == 3 && tcs.SerieTren == 446;
+            if (Pressed && !PressedTimer.Started)
+            {
+                PressedTimer.Start();
+            }
+            if (!Pressed)
+            {
+                PressedTimer.Stop();
+                LZBRebasar = false;
+            }
+            if (PressedTimer.Triggered)
+            {
+                LZBRebasar = true;
+                PressedTimer.Stop();
+            }
+        }
+        public override void Update()
+        {
+            Botones();
+            LZBEmergencyBrake = false;
+            if ((DateTime.Now.DayOfWeek == DayOfWeek.Saturday || DateTime.Now.DayOfWeek == DayOfWeek.Sunday) && tcs.SerieTren == 446)
+            {
+                LZBAhorroEnergia = true;
+            }
+            else LZBAhorroEnergia = false;
+            if (((LZBLiberar && !LZBOE && tcs.SerieTren == 446) || (tcs.SignalPassed && !LZBOE && tcs.SerieTren != 446)) && !LZBSupervising)
+            {
+                LZBSupervising = true;
+                LZBTR = null;
+            }
+            if (LZBRebasar)
+            {
+                LZBSupervising = LZBOE;
+                LZBOE = false;
+                LZBEmergencyBrake = false;
+                if (tcs.SerieTren == 446) LZBSupervising = false;
+                else
+                {
+                    LZBTargetSpeed = LZBMaxSpeed = LZBSpeedLimit = MpS.FromKpH(40);
+                    SetNextSpeedLimitMpS(LZBTargetSpeed);
+                }
+            }
+            if (LZBSupervising && (NextSignalDistanceM(0) > 0 || DistanceM() > 0))
+            {
+                SetVigilanceAlarmDisplay(true);
+                int i;
+                for (i = 0; i < 5 && NextSignalAspect(i) != Aspect.Stop; i++) ;
+                if (NextSignalAspect(i) == Aspect.Stop && NextSignalDistanceM(i) > 0 && !LZBCenter.SobreEnclavamientos)
+                {
+                    LZBCenter.Com(new LZBTrain(MpS.FromKpH(300), 4, 41, 0, (Math.Abs(LZBLastSigDistance - NextSignalDistanceM(i) - (DistanceM() - LZBLastDistance))) / (ClockTime() - LZBLastTime), new LZBPosition(DistanceM() + NextSignalDistanceM(i), false), 2, this));
+                }
+                if (LZBTR == null)
+                {
+                    LZBAlertarLiberar();
+                    LZBTR = new LZBTrain(LZBVMT, 7, LZBPFT, LZBLT, SpeedMpS(), new LZBPosition(DistanceM(), false), 1, this);
+#if _OR_PERS
+                    foreach (var stop in Locomotive.Train.StationStops)
+                    {
+                        LZBTR.Stops.Add(stop.DistanceToTrainM + DistanceM());
+                    }
+#else
+                    if (tcs.SerieTren == 446)
+                    {
+                        float a = 75 - LZBLT;
+                        LZBTR.Stops.Add(3360 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(6771 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(12342 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(15654 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(18837 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(21413 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(24447 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(27059 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(28398 - 37.5f + LZBLT / 2f + a);
+                        LZBTR.Stops.Add(34349 + a);
+                    }
+#endif
+                    LZBTR = LZBCenter.Com(LZBTR);
+                }
+                else if (LZBTR.Position.PK + LZBTR.Profile.TargetDistance <= DistanceM() && LZBTR.Profile.TargetSpeed < 0.1f) LZBOE = true;
+                LZBTR.Speed = SpeedMpS();
+                LZBTR.Position.PK = DistanceM();
+                var tr = LZBCenter.Com(LZBTR);
+                if (tr == null)
+                {
+                    SetVigilanceEmergencyDisplay(true);
+                    if (tcs.SerieTren == 446)
+                    {
+                        if (SpeedCurve(LZBTargetDistance - 350, LZBTargetSpeed, 0, 0, LZBPFT / 250) < LZBSpeedLimit)
+                        {
+                            //Curva de frenado
+                        }
+                        else
+                        {
+                            //Sin curva de frenado
+                        }
+                    }
+                    else
+                    {
+                        if (Math.Abs(LZBTR.NextTrain.Position.PK - LZBTR.Position.PK) < NextSignalDistanceM(0))
+                        {
+                            //Bloqueo parcial
+                        }
+                        else
+                        {
+                            //Bloqueo total
+                        }
+                    }
+                }
+                else
+                {
+                    LZBTR = tr;
+                    SetVigilanceEmergencyDisplay(false);
+                }
+                LZBTargetSpeed = LZBTR.Profile.TargetSpeed;
+                LZBTargetDistance = LZBTR.Profile.TargetDistance;
+                LZBSpeedLimit = LZBTR.Profile.SpeedLimit;
+                LZBSupervisionLimit = SpeedCurve(LZBTargetDistance, LZBTargetSpeed, 0, 0, LZBPFT / 100);
+                LZBV = (LZBTargetDistance < 350 || SpeedCurve(LZBTargetDistance - 350, LZBTargetSpeed, 0, 0, LZBPFT / 250) <= LZBSpeedLimit) && LZBTargetSpeed < LZBSpeedLimit && SpeedMpS() > LZBTargetSpeed;
+                if (LZBTR.Profile.End && LZBTR.Profile.TargetDistance < 1700)
+                {
+                    if (!LZBEnd)
+                    {
+                        LZBRecTimer.Setup(10);
+                        LZBRecTimer.Start();
+                        TriggerSoundInfo1();
+                    }
+                    LZBEnd = true;
+                    if (LZBRecTimer.Triggered)
+                    {
+                        LZBCurveTimer.Setup((LZBSpeedLimit - 3.75f) / 1.25f);
+                        LZBCurveTimer.Start();
+                        LZBRecTimer.Stop();
+                        LZBEmergencyBrake = true;
+                    }
+                    if (LZBCurveTimer.Started)
+                    {
+                        LZBSpeedLimit = LZBSpeedLimit - 3.75f - 1.25f * (int)(LZBCurveTimer.AlarmValue - LZBCurveTimer.RemainingValue);
+                    }
+                    if (LZBLiberar)
+                    {
+                        LZBRecTimer.Stop();
+                        LZBCurveTimer.Stop();
+                    }
+                    if (LZBTR.Profile.TargetDistance < 10)
+                    {
+                        LZBSupervising = false;
+                        LZBEnd = false;
+                    }
+                }
+                LZBSupervisionLimit = Math.Min(LZBSpeedLimit * 1.05f + 1, LZBSupervisionLimit);
+                LZBMaxSpeed = LZBAhorroEnergia ? LZBSpeedLimit * 0.8f : LZBSpeedLimit;
+                if (LZBOE)
+                {
+                    LZBMaxSpeed = LZBSpeedLimit = LZBTargetDistance = LZBTargetSpeed = 0;
+                }
+                if (LZBAnularParada && LZBTR.Stops.Count != 0) LZBTR.Stops.RemoveAt(0);
+                if (LZBTargetDistance > LZBMaxDistance) SetNextSignalAspect(Aspect.Clear_2);
+                else SetNextSignalAspect(Aspect.Stop);
+                if (LZBSupervisionLimit < SpeedMpS() || LZBOE) LZBEmergencyBrake = true;
+                if (LZBTargetDistance < LZBMaxDistance)
+                {
+                    SetNextSpeedLimitMpS(LZBTargetSpeed);
+                    SetCurrentSpeedLimitMpS(MpS.FromKpH(LZBTargetDistance));
+                }
+                else
+                {
+                    SetNextSpeedLimitMpS(LZBSpeedLimit);
+                    SetCurrentSpeedLimitMpS(MpS.FromKpH(LZBMaxDistance));
+                }
+                if (SpeedMpS() > LZBSpeedLimit)
+                {
+                    if (LZBVTimer.Triggered || !LZBVTimer.Started)
+                    {
+                        LZBVOn = !LZBVOn;
+                        LZBVTimer.Start();
+                    }
+                }
+                else
+                {
+                    LZBVTimer.Stop();
+                    LZBVOn = LZBV && LZBSpeedLimit - SpeedMpS() < MpS.FromKpH(30);
+                }
+                if (LZBAhorroEnergia) SetNextSignalAspect(Aspect.Clear_1);
+                else SetNextSignalAspect(Aspect.Clear_2);
+                SetOverspeedWarningDisplay(LZBVOn);
+                LZBPreviousAspect = NextSignalAspect(i);
+                LZBLastSigDistance = NextSignalDistanceM(i);
+                LZBLastDistance = DistanceM();
+                LZBLastTime = ClockTime();
+            }
+            else
+            {
+                SetVigilanceAlarmDisplay(false);
+                SetCurrentSpeedLimitMpS(0);
+                SetNextSpeedLimitMpS(0);
+            }
+        }
+        public void LZBAlertarLiberar()
+        {
+            LZBVMT = tcs.TrainMaxSpeed;
+            if (LZBVMT < MpS.FromKpH(101)) LZBMaxDistance = 2000;
+            else if (LZBVMT < MpS.FromKpH(161)) LZBMaxDistance = 4000;
+            else if (LZBVMT < MpS.FromKpH(201)) LZBMaxDistance = 9900;
+            else LZBMaxDistance = 12000;
+            LZBLT = TrainLengthM();
+            if (tcs.SerieTren == 446)
+            {
+                int LZBDec = 0;
+                switch (LZBDec)
+                {
+                    case 0:
+                        LZBPFT = 124;
+                        break;
+                    case 1:
+                        LZBPFT = 103;
+                        break;
+                    case 2:
+                        LZBPFT = 96;
+                        break;
+                    case 3:
+                        LZBPFT = 89;
+                        break;
+                    case 4:
+                        LZBPFT = 82;
+                        break;
+                    case 7:
+                        LZBPFT = 60;
+                        LZBVMT = MpS.FromKpH(30);
+                        break;
+                }
+            }
+            else LZBPFT = 75;
+        }
+    }
     public class LZBCenter
     {
         public bool SobreEnclavamientos;
@@ -1600,12 +1721,12 @@ namespace ORTS.Scripting.Script
         public float Speed;
         public int Number;
         public LZBPosition Position;
-        public TCS_Spain tcs;
+        public TrainControlSystem tcs;
         public LZBProfile Profile;
         public List<float> Stops;
         public LZBTrain NextTrain;
         public float LastTime;
-        public LZBTrain(float VMT, float TF, float PFT, float LT, float Speed, LZBPosition Position, int Number, TCS_Spain tcs)
+        public LZBTrain(float VMT, float TF, float PFT, float LT, float Speed, LZBPosition Position, int Number, TrainControlSystem tcs)
         {
             this.VMT = VMT;
             this.TF = TF;
@@ -2903,7 +3024,7 @@ namespace ORTS.Scripting.Script
 
         public override void BotonesASFA()
         {
-            if (true /*tcs.ArduinoPort == null*/)
+            if (tcs.ArduinoPort == null)
             {
                 if (tcs.AnuncioLTVPassed) tcs.IsLTV = true;
                 if (tcs.PreviaPassed || tcs.SignalPassed) tcs.IsLTV = false;
@@ -4982,17 +5103,16 @@ namespace ORTS.Scripting.Script
                     }
                     break;
                 case Level.NTC:
-                    if (tcs.LZBInstalled)
+                    if (tcs.LZB != null)
                     {
                         if (tcs.ActiveCCS != TCS_Spain.CCS.LZB)
                         {
                             tcs.ActiveCCS = TCS_Spain.CCS.LZB;
-                            tcs.LZBAlertarLiberar();
+                            tcs.LZB.LZBAlertarLiberar();
                             CurrentMode = Mode.SN;
                         }
-                        tcs.UpdateLZB();
-                        if (tcs.LZBOE) CurrentMode = Mode.TR;
-                        tcs.LZBOE = tcs.LZBEmergencyBrake = false;
+                        if (tcs.LZB.LZBOE) CurrentMode = Mode.TR;
+                        tcs.LZB.LZBOE = tcs.LZB.LZBEmergencyBrake = false;
                     }
                     break;
             }
