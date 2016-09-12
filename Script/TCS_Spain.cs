@@ -1781,6 +1781,7 @@ namespace ORTS.Scripting.Script
                         else
                         {
                             Eficacia = false;
+                            Urgencia = false;
                         }
                     }
                     else
@@ -4277,13 +4278,14 @@ namespace ORTS.Scripting.Script
             {"Emergency brake test: going", "Test de freno de emergencia: en curso" },
             {"Emergency brake test: completed", "Test de freno de emergencia: completado" },
             {"Service brake applied", "Freno de servicio aplicado" },
-            {"Standstil supervision", "Standstill supervision" },
-            {"Reverse movement protection", "Reverse movement protection"}
+            {"Standstill supervision", "Standstill supervision" },
+            {"Reverse movement protection", "Reverse movement protection"},
+            {"Roll away protection", "Roll away protection" }
         };
         class ETCSMessage
         {
             public string Text;
-            public int id = 0;
+            public int id = -1;
             public float Time;
             public Func<bool> Revoke;
             public int Priority;
@@ -4352,6 +4354,7 @@ namespace ORTS.Scripting.Script
                     A.Acknowledged = true;
                     if (A.Revoke()) A.Revoke = () => true;
                     else A.Acknowledgement = false;
+                    Pressed = false;
                 }
             }
             else
@@ -4934,6 +4937,9 @@ namespace ORTS.Scripting.Script
                 return null;
             }
         }
+        public void Botones()
+        {
+        }
         public override void Update()
         {
             SetNV();
@@ -5074,6 +5080,7 @@ namespace ORTS.Scripting.Script
             if (CurrentMode == Mode.SB && IsTrainControlEnabled() && TrainInfo.IsOK && !Start && Pressed)
             {
                 StartMission();
+                Pressed = false;
             }
             if (CurrentMode == Mode.SB && Start)
             {
@@ -5103,6 +5110,7 @@ namespace ORTS.Scripting.Script
                 SetVigilanceEmergencyDisplay(true);
                 SetNextSignalAspect(Aspect.Approach_3);
                 AcknowledgeEoA = true;
+                Pressed = false;
                 tcs.ASFA.Pressed = false;
                 tcs.ASFA.RebasePressed = false;
                 tcs.ASFA.BotonesASFA();
@@ -5174,6 +5182,7 @@ namespace ORTS.Scripting.Script
                 return;
             }
             if (CurrentMode != Mode.RV && CurrentMode != Mode.PT && MA != null) ReverseMovement();
+            Rollaway();
             UpdateControls();
             SpeedProfiles();
             SupervisedTargets();
@@ -5197,7 +5206,10 @@ namespace ORTS.Scripting.Script
         protected void PostTripReverse()
         {
             if (PostTrip == -1) PostTrip = DistanceM();
-            if (!IsDirectionReverse() || DistanceM() - PostTrip > NationalValues.D_NVPOTRP) EmergencyBraking = true;
+            if ((tcs.TrainDirection == Direction.Forward && DistanceM() - PostTrip > NationalValues.D_NVROLL) || (tcs.TrainDirection == Direction.Reverse && DistanceM() - PostTrip > NationalValues.D_NVPOTRP))
+            {
+                EmergencyBraking = true;
+            }
         }
         float ProtectionDistance = -1;
         bool StandstillApply = false;
@@ -5220,6 +5232,34 @@ namespace ORTS.Scripting.Script
                     {
                         StandstillApply = false;
                         ProtectionDistance = -1;
+                        SetVigilanceEmergencyDisplay(false);
+                    }
+                }
+            }
+        }
+        float RollDistance = -1;
+        bool RollawayApply;
+        protected void Rollaway()
+        {
+            if (RollDistance == -1 || tcs.TrainDirection != Direction.N) RollDistance = DistanceM();
+            if (tcs.TrainDirection == Direction.N)
+            {
+                if (DistanceM() - RollDistance > NationalValues.D_NVROLL) RollawayApply = true;
+            }
+            if (RollawayApply)
+            {
+                EmergencyBraking = true;
+                if (SpeedMpS() < 0.1f)
+                {
+                    SetVigilanceEmergencyDisplay(true);
+                    var m = new ETCSMessage("Roll away protection", ClockTime(), () => false, 0, true);
+                    m.Revoke = () => m.Acknowledged;
+                    if (!Messages.Contains(m)) Messages.Add(m);
+                    var a = Messages.Find(x => x.Equals(m));
+                    if (a != null && a.Acknowledged)
+                    {
+                        RollawayApply = false;
+                        RollDistance = -1;
                         SetVigilanceEmergencyDisplay(false);
                     }
                 }
@@ -5313,8 +5353,11 @@ namespace ORTS.Scripting.Script
                 {
                     SetNextSignalAspect(Aspect.Approach_1);
                     var m = new ETCSMessage("Modo TRIP", ClockTime(), () => false, 0, true);
-                    m.Revoke = () => m.Acknowledged;
-                    if (!Messages.Contains(m)) Messages.Add(m);
+                    if (!Messages.Contains(m))
+                    {
+                        Messages.Add(m);
+                        m.Revoke = () => m.Acknowledged;
+                    }
                     var a = Messages.Find(x => x.Equals(m));
                     if (a != null && a.Acknowledged)
                     {
@@ -5600,18 +5643,19 @@ namespace ORTS.Scripting.Script
         {
             if (link != null && link.D_LINK < dMinFront)
             {
-                link = null;
                 switch (link.Q_LINKREACTION)
                 {
                     case 0:
                         Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => CurrentMode != Mode.TR && CurrentMode != Mode.PT, 1, false));
                         Trip();
+                        link = null;
                         return;
                     case 1:
                         Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => LinkingBrake = false, 1, false));
                         LinkingBrake = true;
                         break;
                 }
+                link = null;
             }
             if (CurrentMode == Mode.SR)
             {
