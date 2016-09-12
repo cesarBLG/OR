@@ -4295,6 +4295,7 @@ namespace ORTS.Scripting.Script
             public ETCSMessage(string text, float time, Func<bool> revoke, int priority, bool ack)
             {
                 Text = text;
+                id = -1;
                 for (int i = 0; i < ETCSFixedText.Length / 2; i++)
                 {
                     if (Text == ETCSFixedText[i, 1])
@@ -4346,7 +4347,7 @@ namespace ORTS.Scripting.Script
                         A.Displayed = true;
                         if (A.id == 5) Message(Orts.Simulation.ConfirmLevel.None, ETCSFixedText[A.id, 0]);
                     }
-                    if (!A.Acknowledged && !A.Revoke() && A.id != 5) Message(Orts.Simulation.ConfirmLevel.None, ETCSFixedText[A.id, 0]);
+                    if (!A.Acknowledged && !A.Revoke() && A.id != 5) Message(Orts.Simulation.ConfirmLevel.None, A.id > -1 ? ETCSFixedText[A.id, 0] : A.Text);
                     LastAck = ClockTime();
                 }
                 if (Pressed && A.Displayed)
@@ -4388,7 +4389,7 @@ namespace ORTS.Scripting.Script
                             m.Displayed = true;
                         }
                     }
-                    if (DispMsg.Contains(m)) Message(Orts.Simulation.ConfirmLevel.None, ETCSFixedText[m.id, 0]);
+                    if (DispMsg.Contains(m)) Message(Orts.Simulation.ConfirmLevel.None, m.id > -1 ? ETCSFixedText[m.id, 0] : m.Text);
                 }
             }
         }
@@ -5385,10 +5386,12 @@ namespace ORTS.Scripting.Script
                             case 0:
                                 Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => CurrentMode != Mode.TR && CurrentMode != Mode.PT, 1, false));
                                 Trip();
+                                link = null;
                                 return;
                             case 1:
-                                Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => LinkingBrake = false, 1, false));
+                                Messages.Add(new ETCSMessage("Datos de eurobaliza no consistentes", ClockTime(), () => LinkingBrake == false, 1, false));
                                 LinkingBrake = true;
+                                link = null;
                                 break;
                         }
                     }
@@ -5444,10 +5447,13 @@ namespace ORTS.Scripting.Script
                     MP = null;
                     MPsp = null;
                 }
+                if (!a.Exists(x => x.NID_PACKET == 5)) link = null;
+                if (a.Exists(x => x.NID_PACKET == 12)) LinkingBrake = false;
             }
         }
         protected void UpdateDistances(float Reference)
         {
+            if (link != null) link.D_LINK -= (int)Reference;
             if (MAsp != null) MAsp.Distance -= Reference;
             if (SSPsp != null)
                 foreach (var SP in SSPsp)
@@ -6115,7 +6121,7 @@ namespace ORTS.Scripting.Script
                                 else if (a + 1 == Targets.Count)
                                 {
                                     MRDT = MRDTs[index];
-                                    if (PreviousMRDT != null && MRDT != PreviousMRDT && !((PreviousMRDT == EoA || PreviousMRDT == SvL) && (MRDT == LoA || MRDT == SvL))) TriggerSoundInfo1();
+                                    if (PreviousMRDT != null && !MRDT.Equals(PreviousMRDT) && !((PreviousMRDT == EoA || PreviousMRDT == SvL) && (MRDT == LoA || MRDT == SvL))) TriggerSoundInfo1();
                                     break;
                                 }
                             }
@@ -6124,7 +6130,6 @@ namespace ORTS.Scripting.Script
                         else n++;
                     }
                     if (MRDT == null) MRDT = PreviousMRDT;
-                    else if (PreviousMRDT != null && MRDT != null && PreviousMRDT != MRDT) TriggerSoundInfo1();
                 }
                 foreach (var t in Targets)
                 {
