@@ -28,7 +28,6 @@ namespace ORTS.Scripting.Script
             }
             if (DriverClosingOrder())
             {
-                SetDriverClosingOrder(false);
                 if (CurrentState() == CircuitBreakerState.Open && CurrentPantographState() == PantographState.Up) SetCurrentState(CircuitBreakerState.Closing);
             }
             if (CurrentState() == CircuitBreakerState.Closing)
@@ -49,11 +48,11 @@ namespace ORTS.Scripting.Script
         {
             switch (evt)
             {
-                case PowerSupplyEvent.CloseCircuitBreaker:
+                case PowerSupplyEvent.CloseCircuitBreakerButtonPressed:
                     SetDriverClosingOrder(true);
                     if (CurrentState() == CircuitBreakerState.Open) Message(ConfirmLevel.None, "Disyuntor cerrado");
                     break;
-                case PowerSupplyEvent.OpenCircuitBreaker:
+                case PowerSupplyEvent.CloseCircuitBreakerButtonReleased:
                     SetDriverClosingOrder(false);
                     break;
                 case PowerSupplyEvent.GiveCircuitBreakerClosingAuthorization:

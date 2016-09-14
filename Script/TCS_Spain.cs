@@ -6382,7 +6382,7 @@ namespace ORTS.Scripting.Script
         }
         public override void Update()
         {
-            if (!Activated || !tcs.IsAlerterEnabled() || (tcs as TCS_Spain).TrainDirection == Direction.N)
+            if (!Activated || !tcs.IsAlerterEnabled() || ((TCS_Spain)tcs).TrainDirection == Direction.N)
             {
                 HMReleasedAlertTimer.Stop();
                 HMReleasedEmergencyTimer.Stop();
@@ -6432,7 +6432,7 @@ namespace ORTS.Scripting.Script
                 SetVigilanceAlarmDisplay(false);
                 SetVigilanceEmergencyDisplay(true);
             }
-            if (HMEmergencyBraking && SpeedMpS() < 1.5f)
+            if (HMEmergencyBraking && tcs.SpeedMpS() < 1.5f)
             {
                 HMEmergencyBraking = false;
                 SetVigilanceEmergencyDisplay(false);
