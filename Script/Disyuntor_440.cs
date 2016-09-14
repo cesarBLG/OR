@@ -7,7 +7,7 @@ using Orts.Simulation;
 
 namespace ORTS.Scripting.Script
 {
-    public class Disyuntor_269 : CircuitBreaker
+    public class Disyuntor_440 : CircuitBreaker
     {
         private Timer ClosingTimer;
 
