@@ -20,7 +20,7 @@ namespace ORTS.Scripting.Script
         PantographState PantoPrevState;
         public override void Update(float elapsedSeconds)
         {
-            SetClosingAuthorization(TCSClosingAuthorization() && DriverClosingAuthorization());
+            SetClosingAuthorization(TCSClosingAuthorization() && DriverClosingAuthorization() && CurrentPantographState() == PantographState.Up);
             switch(CurrentState())
             {
                 case CircuitBreakerState.Open:
