@@ -186,7 +186,7 @@ namespace ORTS.Scripting.Script
             UpdateAnuncioLTVPassed();
             if (HM != null)
             {
-                HM.Activated = true;
+                HM.Activated = (ASFA == null || !ASFA.Activated) && (ETCS == null || !ETCS.Activated) && !ATFActivated;
                 HM.Update();
             }
             else if (AlerterSound()) SetVigilanceAlarm(false);
@@ -1909,6 +1909,8 @@ namespace ORTS.Scripting.Script
             Rec.Setup(3f);
 
             ConexPressed = true;
+
+            SetVelocidades();
         }
         public Freq Baliza()
         {
