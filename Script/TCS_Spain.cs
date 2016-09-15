@@ -4318,7 +4318,7 @@ namespace ORTS.Scripting.Script
                 var a = obj as ETCSMessage;
                 if (a != null)
                 {
-                    if (id == a.id) return true;
+                    if (id == a.id && (Text == a.Text || id > -1)) return true;
                     else return false;
                 }
                 else return base.Equals(obj);
@@ -4330,39 +4330,54 @@ namespace ORTS.Scripting.Script
         }
         List<ETCSMessage> Messages;
         List<ETCSMessage> DispMsg;
+        List<ETCSMessage> AckMsg = new List<ETCSMessage>();
         float LastAck = -1;
         protected void ViewMessages()
         {
             Messages.RemoveAll(x => x.Revoke());
+            AckMsg.RemoveAll(x => !Messages.Contains(x));
             DispMsg = new List<ETCSMessage>();
             DispMsg.Clear();
             if (Messages.Count == 0) return;
-            var A = Messages.Find(x => x.Acknowledgement);
-            if (A != null)
+            foreach(var m in Messages)
             {
+                if (m.Acknowledgement)
+                {
+                    if(!AckMsg.Contains(m)) AckMsg.Add(m);
+                }
+                else
+                {
+                    DispMsg.Add(m);
+                }
+            }
+            if (AckMsg.Count > 0)
+            {
+                var A = AckMsg[0];
                 if (LastAck + 1 <= ClockTime() || A.Displayed)
                 {
                     DispMsg.Add(A);
                     if (!A.Displayed)
                     {
-                        TriggerSoundInfo1();
+                        if (A.id == 1) TriggerSoundPenalty1();
+                        else TriggerSoundInfo1();
                         A.Displayed = true;
-                        if (A.id == 5) Message(Orts.Simulation.ConfirmLevel.None, ETCSFixedText[A.id, 0]);
                     }
-                    if (!A.Acknowledged && !A.Revoke() && A.id != 5) Message(Orts.Simulation.ConfirmLevel.None, A.id > -1 ? ETCSFixedText[A.id, 0] : A.Text);
                     LastAck = ClockTime();
                 }
+                Message(Orts.Simulation.ConfirmLevel.None, A.id > -1 ? ETCSFixedText[A.id, 0] : A.Text);
                 if (Pressed && A.Displayed)
                 {
                     A.Acknowledged = true;
                     if (A.Revoke()) A.Revoke = () => true;
-                    else A.Acknowledgement = false;
+                    A.Acknowledgement = false;
                     Pressed = false;
+                    AckMsg.Remove(A);
                 }
+                return;
             }
             else
             {
-                Messages.Sort(delegate (ETCSMessage x, ETCSMessage y)
+                DispMsg.Sort(delegate (ETCSMessage x, ETCSMessage y)
                 {
                     if (x == y) return 0;
                     else if (x == null) return -1;
@@ -4377,21 +4392,15 @@ namespace ORTS.Scripting.Script
                     }
                     else return 0;
                 });
-                foreach (var m in Messages)
+                foreach (var m in DispMsg)
                 {
-                    m.Acknowledgement = false;
-                    m.Acknowledged = true;
                     if (m.Revoke()) m.Revoke = () => true;
-                    if (!DispMsg.Contains(m))
+                    if (!m.Displayed)
                     {
-                        DispMsg.Add(m);
-                        if (!m.Displayed)
-                        {
-                            if (m.Priority == 1) TriggerSoundInfo1();
-                            m.Displayed = true;
-                        }
+                        if (m.Priority == 1) TriggerSoundInfo1();
+                        m.Displayed = true;
                     }
-                    if (DispMsg.Contains(m)) Message(Orts.Simulation.ConfirmLevel.None, m.id > -1 ? ETCSFixedText[m.id, 0] : m.Text);
+                    Message(Orts.Simulation.ConfirmLevel.None, m.id > -1 ? ETCSFixedText[m.id, 0] : m.Text);
                 }
             }
         }
@@ -5013,11 +5022,9 @@ namespace ORTS.Scripting.Script
                                 {
                                     if (!OverrideEoA)
                                     {
-                                        CurrentMode = Mode.TR;
-                                        TriggerSoundPenalty1();
+                                        Trip();
                                         Messages.Add(new ETCSMessage("EoA o LoA rebasado", ClockTime(), () => CurrentMode != Mode.TR && CurrentMode != Mode.PT, 1, false));
                                     }
-                                    MA = null;
                                 }
                                 if (((RadioMA)ERM).OptionalPackets != null)
                                 {
@@ -5039,8 +5046,7 @@ namespace ORTS.Scripting.Script
                                 EmergencyBraking = true;
                                 if (!OverrideEoA)
                                 {
-                                    CurrentMode = Mode.TR;
-                                    TriggerSoundPenalty1();
+                                    Trip();
                                 }
                                 break;
                         }
@@ -5338,7 +5344,6 @@ namespace ORTS.Scripting.Script
                 if (CurrentMode != Mode.TR)
                 {
                     CurrentMode = Mode.TR;
-                    TriggerSoundPenalty1();
                     MA = null;
                     MAsp = null;
                     MP = null;
