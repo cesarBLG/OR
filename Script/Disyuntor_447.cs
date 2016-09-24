@@ -21,9 +21,8 @@ namespace ORTS.Scripting.Script
         {
             if (!TCSClosingAuthorization() || CurrentPantographState()!=PantographState.Up) SetCurrentState(CircuitBreakerState.Open);
             if (PantoPrevState != PantographState.Up && CurrentPantographState() == PantographState.Up) SetCurrentState(CircuitBreakerState.Closing);
-            if (DriverClosingAuthorization())
+            if (DriverOpeningOrder())
             {
-                SetDriverClosingAuthorization(false);
                 SetCurrentState(CircuitBreakerState.Open);
             }
             if (DriverClosingOrder())
@@ -55,12 +54,12 @@ namespace ORTS.Scripting.Script
                 case PowerSupplyEvent.CloseCircuitBreakerButtonReleased:
                     SetDriverClosingOrder(false);
                     break;
-                case PowerSupplyEvent.GiveCircuitBreakerClosingAuthorization:
-                    SetDriverClosingAuthorization(true);
+                case PowerSupplyEvent.OpenCircuitBreakerButtonPressed:
+                    SetDriverOpeningOrder(true);
                     if(CurrentState()==CircuitBreakerState.Closed) Message(ConfirmLevel.None, "Disyuntor abierto");
                     break;
-                case PowerSupplyEvent.RemoveCircuitBreakerClosingAuthorization:
-                    SetDriverClosingAuthorization(false);
+                case PowerSupplyEvent.OpenCircuitBreakerButtonReleased:
+                    SetDriverOpeningOrder(false);
                     break;
             }
         }
