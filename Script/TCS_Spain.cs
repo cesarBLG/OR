@@ -6352,9 +6352,9 @@ namespace ORTS.Scripting.Script
         public HM(TrainControlSystem tcs)
         {
             this.tcs = tcs;
-            SetVigilanceAlarm = tcs.SetVigilanceAlarm;
-            SetVigilanceAlarmDisplay = tcs.SetVigilanceAlarmDisplay;
-            SetVigilanceEmergencyDisplay = tcs.SetVigilanceEmergencyDisplay;
+            SetVigilanceAlarm = (value) => { if (Activated) tcs.SetVigilanceAlarm(value); };
+            SetVigilanceAlarmDisplay = (value) => { if (Activated) tcs.SetVigilanceAlarmDisplay(value); };
+            SetVigilanceEmergencyDisplay = (value) => { if (Activated) tcs.SetVigilanceAlarm(value); };
         }
         public override void SetEmergency(bool emergency)
         {

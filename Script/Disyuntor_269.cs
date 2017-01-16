@@ -50,6 +50,7 @@ namespace ORTS.Scripting.Script
             switch (evt)
             {
                 case PowerSupplyEvent.CloseCircuitBreakerButtonPressed:
+                    Confirm(CabControl.CircuitBreakerClosingOrder, CabSetting.On);
                     SetDriverClosingOrder(true);
                     break;
                 case PowerSupplyEvent.CloseCircuitBreakerButtonReleased:
