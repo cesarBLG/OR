@@ -51,12 +51,12 @@ class ASFA_State
 {
   public:
     Button Buttons[ButtonsNumber];
-    ASFA_Info UltimaInfo;
+    /*ASFA_Info UltimaInfo;
     int Speed;
     int Target;
     bool Overspeed1;
     bool Overspeed2;
-    bool Emergency;
+    bool Emergency;*/
 } ASFAState;
 void setup() {
   // put your setup code here, to run once:
@@ -96,9 +96,9 @@ void setup() {
     ASFAState.Buttons[i].PressedPort = port;
     pinMode(port, INPUT);
   }
-  pinMode(11, OUTPUT);
+  /*pinMode(11, OUTPUT);
   pinMode(12, OUTPUT);
-  pinMode(13, OUTPUT);
+  pinMode(13, OUTPUT);*/
   Serial.begin(9600);
   while (!Serial) {}
   PreviousTime = 0;
@@ -107,9 +107,10 @@ int WasAvailable = 1;
 long BlinkingTime = 0;
 int GreenLedState = LOW;
 unsigned long PreviousSend = 0; 
+ASFA_State prevstate;
 void loop() {
   // put your main code here, to run repeatedly:
-  char info[] = {0, 0, 0, 0, 0, 0, 0};
+  /*char info[] = {0, 0, 0, 0, 0, 0, 0};
   byte buff[5];
   if(Serial.available()>=7)
   {
@@ -123,23 +124,21 @@ void loop() {
       ASFAState.UltimaInfo = (ASFA_Info)(((int)info[0])-48);
     }
   }
-  /*ASFAState.Speed = info[1];
+  ASFAState.Speed = info[1];
   ASFAState.Target = info[2];*/
   for (int i = 0; i < ButtonsNumber; i++)
   {
     ASFAState.Buttons[i].IsPressed = digitalRead(ASFAState.Buttons[i].PressedPort);
     ASFAState.Buttons[i].Update(millis() - PreviousTime);
+	if(abs(ASFAState.Buttons[i].TimePressed - prevState.Buttons[i].TimePressed)>250)
+	{
+		Serial.write(i);
+		Serial.write(ASFAState.Buttons[i].TimePressed / 20);
+		Serial.write(255);
+		Serial.write(255);
+	}
   }
-  if(PreviousSend + 500 < millis())
-  {
-    for (int i = 0; i < ButtonsNumber; i++)
-    {
-      Serial.print(ASFAState.Buttons[i].IsPressed);
-    }
-    Serial.println("ASFA");
-    PreviousSend = millis();
-  }
-  switch (ASFAState.UltimaInfo)
+  /*switch (ASFAState.UltimaInfo)
   {
     case Via_libre:
       digitalWrite(13, HIGH);
@@ -177,6 +176,6 @@ void loop() {
       digitalWrite(12, LOW);
       digitalWrite(11, LOW);
       break;
-  }
+  }*/
   PreviousTime = millis();
 }

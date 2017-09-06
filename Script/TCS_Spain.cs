@@ -28,8 +28,6 @@ namespace ORTS.Scripting.Script
             Digital,
         }
         Tipo_ASFA TipoASFA;
-        
-        public Direction TrainDirection;
 
         bool ASFAInstalled;
         bool ASFADigitalInstalled;
@@ -45,17 +43,6 @@ namespace ORTS.Scripting.Script
         float VelocidadPrefijada = 0;
 
         public int SerieTren;
-
-        float ASFAMaxSpeed;
-        float ASFASpeed;
-        float ASFATargetSpeed;
-        float ASFADisplaySpeed;
-        
-        OdoMeter ASFAPreviaDistance;
-        OdoMeter ASFATravelledDistance;
-        OdoMeter ASFASignalTravelledDistance;
-        OdoMeter ASFAPaNTravelledDistance;
-        OdoMeter ASFALTVTravelledDistance;
 
         //ETCS
         public int ETCSInstalledLevel;
@@ -81,9 +68,9 @@ namespace ORTS.Scripting.Script
         public bool PostPassed = false;
         public bool AnuncioLTVPassed = false;
         public bool PreanuncioLTVPassed = false;
-        float PreviaDistance = 300f;
+        public float PreviaDistance = 300f;
         public int PreviaSignalNumber;
-        float AnuncioDistance = 1500f;
+        public float AnuncioDistance = 1500f;
         Aspect CurrentSignalAspect;
 
         public bool ETCSPressed;
@@ -106,9 +93,9 @@ namespace ORTS.Scripting.Script
         public ASFA ASFA;
         public LZB LZB;
         public HM HM;
+        public Serial serial;
         public override void Initialize()
         {
-            TrainDirection = Direction.N;
             ASFAInstalled = GetBoolParameter("General", "ASFA", true);
             ETCSInstalled = GetBoolParameter("General", "ETCS", false);
             HMInhibited = GetBoolParameter("General", "HMInhibited", true);
@@ -119,14 +106,10 @@ namespace ORTS.Scripting.Script
             if (ASFAInstalled)
             {
                 ActiveCCS = CCS.ASFA;
-                SetNextSpeedLimitMpS(ASFATargetSpeed);
                 if (ASFADigitalInstalled)
                 {
-                    ASFA = new ASFADigital(this);
-                    var asfa = (ASFADigital)ASFA;
-                    ASFA.Urgencia = true;
                     TipoASFA = Tipo_ASFA.Digital;
-                    asfa.ModoActual = ASFADigital.Modo.OFF;
+                    ASFA = new ASFADigital(this);
                 }
                 else
                 {
@@ -152,28 +135,30 @@ namespace ORTS.Scripting.Script
                 ActiveCCS = CCS.ETCS;
                 ETCS = new ETCS(this);
             }
-            if(!HMInhibited)
+            if (!HMInhibited)
             {
                 HM = new HM(this);
                 HM.Initialize();
             }
             TrainMaxSpeed = MpS.FromKpH(GetFloatParameter("General", "MaxSpeed", 380f));
-            if(ASFA!=null) ASFA.TipoTren = MpS.FromKpH(GetFloatParameter("ASFA", "TipoTren", 250f));
             SerieTren = GetIntParameter("General", "Serie", 440);
-            if (ASFA != null && ASFA.TipoTren > MpS.FromKpH(205f)) ASFA.TipoTren = TrainMaxSpeed;
 
             Activated = true;
             PreviousSignalDistanceM = 0f;
             PreviousPostDistanceM = 0f;
 
-            if(ASFA != null) ASFA.Initialize();
-            if(ETCS != null) ETCS.Initialize();
+            if (ASFA != null)
+            {
+                if (ASFA is ASFAclasico) (ASFA as ASFAclasico).Initialize();
+                else (ASFA as ASFADigital).Conex();
+            }
+            if (ETCS != null) ETCS.Initialize();
             if (LZB != null) LZB.Initialize();
+            serial = new Serial(115000, this);
         }
         public bool LineaConvencional;
         public override void Update()
         {
-            if (IsDirectionReverse()) TrainDirection = Direction.Reverse;
             LineaConvencional = true;
             if (CurrentPostSpeedLimitMpS() > MpS.FromKpH(200)) LineaConvencional = false;
             for (int i = 0; i < 5; i++)
@@ -186,25 +171,21 @@ namespace ORTS.Scripting.Script
             UpdateAnuncioLTVPassed();
             if (HM != null)
             {
-                HM.Activated = (ASFA == null || !ASFA.Activated) && (ETCS == null || !ETCS.Activated) && !ATFActivated;
+                HM.Activated = (ASFA == null || !ASFA.Connected()) && (ETCS == null || !ETCS.Activated) && !ATFActivated;
                 HM.Update();
             }
             else if (AlerterSound()) SetVigilanceAlarm(false);
-            Arduino();
+            serial.poll();
             if (!IsTrainControlEnabled())
             {
-                if(ASFA != null) ASFA.Activated = ASFA.Eficacia = false;
-                if(ETCS!=null) ETCS.CurrentMode = ETCS.Mode.NL;
+                if (ASFA is ASFADigital) (ASFA as ASFADigital).Connected = false;
+                else (ASFA as ASFAclasico).Activated = false;
+                if (ETCS != null) ETCS.CurrentMode = ETCS.Mode.NL;
             }
-            if (ArduinoPort != null && TipoASFA != Tipo_ASFA.Digital) ActiveCCS = CCS.EXT;
+            if (serial.Port != null && TipoASFA != Tipo_ASFA.Digital) ActiveCCS = CCS.EXT;
             if (ASFAInstalled && (ActiveCCS != CCS.EXT || ASFA is ASFADigital))
             {
                 ASFA.Update();
-                if (ActiveCCS == CCS.ASFA)
-                {
-                    if (ASFA.Activated) SetCurrentSpeedLimitMpS(0);
-                    else SetCurrentSpeedLimitMpS(TrainMaxSpeed);
-                }
             }
             if (LZBInstalled)
             {
@@ -214,15 +195,18 @@ namespace ORTS.Scripting.Script
                     ActiveCCS = CCS.LZB;
                     if (ASFAInstalled)
                     {
-                        if (ASFA is ASFADigital) ((ASFADigital)ASFA).ModoActual = ASFADigital.Modo.EXT;
-                        ASFA.Eficacia = false;
+                        if (ASFA is ASFADigital)
+                        {
+                            ((ASFADigital)ASFA).AKT = true;
+                            ((ASFADigital)ASFA).CON = false;
+                        }
                     }
                 }
                 else if (ASFAInstalled)
                 {
                     ActiveCCS = CCS.ASFA;
-                    if (ASFA is ASFADigital) ((ASFADigital)ASFA).ModoActual = ASFADigital.Modo.CONV;
-                    ASFA.Eficacia = ASFA.Activated;
+                    ((ASFADigital)ASFA).AKT = false;
+                    ((ASFADigital)ASFA).CON = true;
                 }
             }
             if (ETCSInstalled) ETCS.Update();
@@ -263,146 +247,14 @@ namespace ORTS.Scripting.Script
                 }
                 if (ATFActivated) ATF(ATFSpeed);
             }
-            SetPenaltyApplicationDisplay((ASFA!=null && ASFA.Urgencia) || (ETCS!=null&&(ETCS.EmergencyBraking || ETCS.ServiceBrake)) || (LZB!=null && LZB.LZBOE));
+            SetPenaltyApplicationDisplay((ASFA != null && ASFA.Urgencia()) || (ETCS != null && (ETCS.EmergencyBraking || ETCS.ServiceBrake)) || (LZB != null && LZB.LZBOE));
             SetFullBrake((ETCS != null && ETCS.ServiceBrake && !ETCS.EmergencyBraking) || ATFFullBrake);
-            SetEmergencyBrake((ASFA!=null && ASFA.Urgencia) || (ETCS!=null && ETCS.EmergencyBraking) || (HM!=null && HM.HMEmergencyBraking) || (LZB != null && LZB.LZBEmergencyBrake));
-            SetTractionAuthorization((ASFA == null || !ASFA.Urgencia) && (ETCS == null || (!ETCS.TCO && !ETCS.EmergencyBraking && !ETCS.ServiceBrake)) && (HM == null || !HM.HMEmergencyBraking) && (LZB == null || !LZB.LZBEmergencyBrake));
+            SetEmergencyBrake((ASFA != null && ASFA.Urgencia()) || (ETCS != null && ETCS.EmergencyBraking) || (HM != null && HM.HMEmergencyBraking) || (LZB != null && LZB.LZBEmergencyBrake) || IsDirectionNeutral());
+            SetTractionAuthorization(((ASFA == null || !ASFA.Urgencia()) && (ETCS == null || (!ETCS.TCO && !ETCS.EmergencyBraking && !ETCS.ServiceBrake)) && (HM == null || !HM.HMEmergencyBraking) && (LZB == null || !LZB.LZBEmergencyBrake)) && (LocomotiveBrakeCylinderPressureBar() < BrakeCutsPowerAtBrakeCylinderPressureBar() || !DoesBrakeCutPower()));
             bool ETCSNeutralZone = false;
             bool ETCSLowerPantographs = false;
             SetPowerAuthorization(!ETCSNeutralZone);
             if (ETCSLowerPantographs) SetPantographsDown();
-        }
-        public string ArduinoPort = null;
-        SerialPort sp;
-        float PreviousTime = 0;
-        float LastConex = 0;
-        protected void Arduino()
-        {
-            string[] ports = null;
-            if (ArduinoPort == null)
-            {
-                ports = SerialPort.GetPortNames();
-                foreach (string port in ports)
-                {
-                    try
-                    {
-                        using (SerialPort sp = new SerialPort(port))
-                        {
-                            sp.Open();
-                            string incoming = sp.ReadExisting();
-                            if (incoming.Contains("ASFA")) ArduinoPort = port;
-                            else sp.Close();
-                        }
-                        if (ArduinoPort != null)
-                        {
-                            sp = new SerialPort(ArduinoPort, 9600);
-                            sp.WriteBufferSize = 128;
-                            sp.ReadBufferSize = 128;
-                            LastConex = ClockTime();
-                            break;
-                        }
-                    }
-                    catch (Exception) { }
-                }
-            }
-            if (ArduinoPort != null)
-            {
-                try
-                {
-                    if (!sp.IsOpen) sp.Open();
-                    sp.WriteTimeout = 10;
-                    char[] incoming = new char[13];
-                    if (ASFA is ASFADigital)
-                    {
-                        var asfa = ASFA as ASFADigital;
-                        ASFA.ConexPressed = true;
-                        while (sp.BytesToRead > 13 && sp.ReadChar() != '\n') ;
-                        if (sp.BytesToRead >= 13)
-                        {
-                            sp.Read(incoming, 0, 13);
-                            LastConex = ClockTime();
-                        }
-                        if (incoming[9] == 'A')
-                        {
-                            asfa.AnParPressed = incoming[0] == '1';
-                            asfa.AnPrePressed = incoming[1] == '1';
-                            asfa.PrePar_VLCondPressed = incoming[2] == '1';
-                            asfa.PaNPressed = incoming[3] == '1';
-                            asfa.LTVPressed = incoming[4] == '1';
-                            ASFA.RebasePressed = incoming[5] == '1';
-                            asfa.AumVelPressed = incoming[6] == '1';
-                            asfa.ModoPressed = incoming[7] == '1';
-                            ASFA.RearmeFrenoPressed = incoming[8] == '1';
-                        }
-                        if (PreviousTime + 0.5f < ClockTime())
-                        {
-                            switch ((ASFA as ASFADigital).UltimaInfoRecibida)
-                            {
-                                case ASFADigital.Info.Via_Libre_Cond:
-                                    sp.Write("1");
-                                    break;
-                                case ASFADigital.Info.Anuncio_Parada:
-                                    sp.Write("2");
-                                    break;
-                                case ASFADigital.Info.Anuncio_Precaucion:
-                                    sp.Write("3");
-                                    break;
-                                case ASFADigital.Info.Via_Libre:
-                                    sp.Write("0");
-                                    break;
-                                case ASFADigital.Info.Senal_Rojo:
-                                    sp.Write("7");
-                                    break;
-                                case ASFADigital.Info.Previa_Rojo:
-                                    sp.Write("6");
-                                    break;
-                                default:
-                                    sp.Write("8");
-                                    break;
-                            }
-                            sp.Write("ASFA" + '\r' + '\n');
-                            PreviousTime = ClockTime();
-                        }
-                    }
-                    else
-                    {
-                        while (sp.BytesToRead > 7 && sp.ReadChar() != '\n') ;
-                        byte[] data = new byte[1];
-                        if (sp.BytesToRead > 0)
-                        {
-                            sp.Read(data, 0, 1);
-                            LastConex = ClockTime();
-                        }
-                        if (data[0] == 48) ASFA.Urgencia = false;
-                        if (data[0] == 49) ASFA.Urgencia = true;
-                        char freq = '/';
-                        switch (ASFA.Baliza())
-                        {
-                            case ASFA.Freq.FP: freq = '0'; break;
-                            case ASFA.Freq.L1: freq = '1'; break;
-                            case ASFA.Freq.L2: freq = '2'; break;
-                            case ASFA.Freq.L3: freq = '3'; break;
-                            case ASFA.Freq.L4: freq = '4'; break;
-                            case ASFA.Freq.L5: freq = '5'; break;
-                            case ASFA.Freq.L6: freq = '6'; break;
-                            case ASFA.Freq.L7: freq = '7'; break;
-                            case ASFA.Freq.L8: freq = '8'; break;
-                            case ASFA.Freq.L9: freq = '9'; break;
-                        }
-                        byte speed = Convert.ToByte(Math.Abs(MpS.ToKpH(SpeedMpS())));
-                        if (PreviousTime + 0.5f < ClockTime() || freq != '0')
-                        {
-                            sp.Write(new char[1] { freq }, 0, 1);
-                            sp.Write(new byte[1] { speed }, 0, 1);
-                            sp.Write("ASFA" + '\r' + '\n');
-                            PreviousTime = ClockTime();
-                        }
-                    }
-                }
-                catch (Exception)
-                {
-                }
-            }
         }
         public class OnBoardMA
         {
@@ -684,24 +536,56 @@ namespace ORTS.Scripting.Script
         {
             ExternalEmergencyBraking = emergency;
         }
+        bool Pressed;
 		public override void HandleEvent(TCSEvent evt, string message)
    		{
-            switch (evt)
+            if (evt == TCSEvent.AlerterPressed) Pressed = true;
+            if (evt == TCSEvent.AlerterReleased) Pressed = false;
+            if (ASFA is ASFAclasico) (ASFA as ASFAclasico).HandleEvent(evt, message);
+            else if(serial.Port==null)
             {
-                case TCSEvent.ReverserChanged:
-                    switch (TrainDirection)
+                var asfa = ASFA as ASFADigital;
+                if(!Pressed)
+                {
+                    asfa.Botones.getList().ForEach(delegate (Boton b) { b.Pulsado = false; b.TimePressed = 0; });
+                }
+                else
+                {
+                    if (NextSignalDistanceM(0) < 450)
                     {
-                        case Direction.Forward:
-                        case Direction.Reverse:
-                            TrainDirection = Direction.N;
-                            break;
-                        case Direction.N:
-                            TrainDirection = IsDirectionReverse() ? Direction.Reverse : Direction.Forward;
-                            break;
+                        if (NextSignalAspect(0) == Aspect.Approach_1 || NextSignalAspect(0) == Aspect.Approach_3)
+                        {
+                            asfa.Botones.AnuncioParada.Pulsado = true;
+                            asfa.Botones.AnuncioParada.TimePressed = 0.7f;
+                        }
+                        if (NextSignalAspect(0) == Aspect.Approach_2)
+                        {
+                            asfa.Botones.AnuncioPrecaución.Pulsado = true;
+                            asfa.Botones.AnuncioPrecaución.TimePressed = 0.7f;
+                        }
+                        if (NextSignalAspect(0) == Aspect.Clear_1)
+                        {
+                            asfa.Botones.VL_Condicional.Pulsado = true;
+                            asfa.Botones.VL_Condicional.TimePressed = 0.7f;
+                        }
+                        if (NextSignalAspect(0) == Aspect.Clear_2)
+                        {
+                            asfa.Botones.PN.Pulsado = true;
+                            asfa.Botones.PN.TimePressed = 0.7f;
+                        }
+                        if (NextSignalAspect(0) == Aspect.Stop || NextSignalAspect(0) == Aspect.StopAndProceed)
+                        {
+                            asfa.Botones.Rebase.Pulsado = true;
+                            asfa.Botones.Rebase.TimePressed = 3;
+                        }
                     }
-                    break;
+                    if(SpeedMpS()<MpS.FromKpH(5))
+                    {
+                        asfa.Botones.Rearme.Pulsado = true;
+                        asfa.Botones.Rearme.TimePressed = 0.7f;
+                    }
+                }
             }
-            if (ASFA != null) ASFA.HandleEvent(evt, message);
             if (ETCS != null) ETCS.HandleEvent(evt, message);
             if (LZB != null) LZB.HandleEvent(evt, message);
             if (HM != null) HM.HandleEvent(evt, message);
@@ -786,7 +670,7 @@ namespace ORTS.Scripting.Script
             }
             else CurrentSignalAspect = NextSignalAspect(0);
             if ((NextSignalAspect(0) == Aspect.Clear_2 && NextSignalSpeedLimitMpS(0) < MpS.FromKpH(165f) && NextSignalSpeedLimitMpS(0) > MpS.FromKpH(155f)) || (NextSignalAspect(0) == Aspect.Approach_1 && NextSignalSpeedLimitMpS(0) < MpS.FromKpH(35f) && NextSignalSpeedLimitMpS(0) > MpS.FromKpH(25f))) IsPN = true;
-            if (!SignalPassed && (ASFA==null || !ASFA.Rec.Started) && IsPN && !((NextSignalAspect(0) == Aspect.Clear_2 && NextSignalSpeedLimitMpS(0) < MpS.FromKpH(165f) && NextSignalSpeedLimitMpS(0) > MpS.FromKpH(155f)) || (NextSignalAspect(0) == Aspect.Approach_1 && NextSignalSpeedLimitMpS(0) < MpS.FromKpH(35f) && NextSignalSpeedLimitMpS(0) > MpS.FromKpH(25f)))) IsPN = false;
+            if (!SignalPassed && (ASFA==null/* || !ASFA.Rec.Started*/) && IsPN && !((NextSignalAspect(0) == Aspect.Clear_2 && NextSignalSpeedLimitMpS(0) < MpS.FromKpH(165f) && NextSignalSpeedLimitMpS(0) > MpS.FromKpH(155f)) || (NextSignalAspect(0) == Aspect.Approach_1 && NextSignalSpeedLimitMpS(0) < MpS.FromKpH(35f) && NextSignalSpeedLimitMpS(0) > MpS.FromKpH(25f)))) IsPN = false;
             if (PreviaDistance != 0f) UpdatePreviaPassed();
             else PreviaPassed = false;
         }
@@ -1711,7 +1595,13 @@ namespace ORTS.Scripting.Script
             this.End = End;
         }
     }
-    public abstract class ASFA : TrainControlSystem
+    public interface ASFA
+    {
+        bool Urgencia();
+        bool Connected();
+        void Update();
+    }
+    public abstract class ASFAclasico : TrainControlSystem, ASFA
     {
         public enum Freq
         {
@@ -1743,7 +1633,7 @@ namespace ORTS.Scripting.Script
 
         public bool Pressed = false;
         public bool RearmeFrenoPressed;
-        public bool RebasePressed;
+        public bool RebasePressed = false;
         public bool ConexPressed;
 
         public int ConexTimesPressed;
@@ -1757,50 +1647,11 @@ namespace ORTS.Scripting.Script
             BotonesASFA();
             if (ConexPressed)
             {
-                if (!Activated && !TiempoEncendido.Started)
-                {
-                    if (this is ASFADigital)
-                    {
-                        var asfa = this as ASFADigital;
-                        if (asfa.ModoActual != ASFADigital.Modo.EXT) tcs.ActiveCCS = TCS_Spain.CCS.ASFA;
-                    }
-                    else if (Eficacia) tcs.ActiveCCS = TCS_Spain.CCS.ASFA;
-                    if (this is ASFADigital)
-                    {
-                        var Dig = (ASFADigital)this;
-                        if (Dig.ModoActual != ASFADigital.Modo.EXT)
-                        {
-                            Urgencia = true;
-                            if (Dig.ModoAV && !Dig.ModoCONV) Dig.ModoActual = ASFADigital.Modo.AVE;
-                            else Dig.ModoActual = ASFADigital.Modo.CONV;
-                            TriggerSoundInfo1();
-                            TiempoEncendido.Start();
-                            ConexTimesPressed = 0;
-                            Dig.ControlArranque = true;
-                        }
-                        else
-                        {
-                            Eficacia = false;
-                            Urgencia = false;
-                        }
-                    }
-                    else
-                    {
-                        Activated = true;
-                        Eficacia = tcs.ActiveCCS == TCS_Spain.CCS.ASFA;
-                        ConexTimesPressed = 0;
-                        TriggerSoundInfo1();
-                        TiempoEncendido.Stop();
-                    }
-                }
-                if (TiempoEncendido.Triggered)
-                {
-                    TiempoEncendido.Stop();
-                    TriggerSoundSystemActivate();
-                    Activated = true;
-                    Urgencia = true;
-                    Eficacia = true;
-                }
+                if (Eficacia) tcs.ActiveCCS = TCS_Spain.CCS.ASFA;
+                Activated = true;
+                Eficacia = tcs.ActiveCCS == TCS_Spain.CCS.ASFA;
+                ConexTimesPressed = 0;
+                TriggerSoundInfo1();
             }
             else if (Activated)
             {
@@ -1820,7 +1671,7 @@ namespace ORTS.Scripting.Script
                     break;
             }
         }
-        public ASFA(TrainControlSystem TCS)
+        public ASFAclasico(TrainControlSystem TCS)
         {
             tcs = TCS as TCS_Spain;
             // AbstractScriptClass
@@ -1975,8 +1826,18 @@ namespace ORTS.Scripting.Script
             }
             return Freq.FP;
         }
+
+        bool ASFA.Urgencia()
+        {
+            return Urgencia;
+        }
+
+        bool ASFA.Connected()
+        {
+            return Activated;
+        }
     }
-    public class ASFAOriginal : ASFA
+    public class ASFAOriginal : ASFAclasico
     {
         bool ASFAFrenarOn = false;
         bool ASFARecOn = false;
@@ -2159,7 +2020,7 @@ namespace ORTS.Scripting.Script
             else Urgencia = false;
         }
     }
-    public class ASFA200 : ASFA
+    public class ASFA200 : ASFAclasico
     {
         bool FrenarOn = false;
         bool RecOn = false;
@@ -2379,1807 +2240,6 @@ namespace ORTS.Scripting.Script
                 if (Urgencia && RearmeFrenoPressed && SpeedMpS() < 1.5f) Urgencia = false;
             }
             else Urgencia = false;
-        }
-    }
-    public class ASFADigital : ASFA
-    {
-        public enum Modo
-        {
-            CONV,
-            AVE,
-            MBRA,
-            BTS,
-            BasicoCONV,
-            BasicoAVE,
-            EXT,
-            OFF
-        }
-        public Modo ModoActual;
-
-        public enum Info
-        {
-            Ninguno,
-            Via_Libre,
-            Via_Libre_Cond,
-            Preanuncio_AV,
-            Preanuncio,
-            Anuncio_Precaucion,
-            Anuncio_Parada,
-            Previa_Rojo,
-            Senal_Rojo,
-            Rebase_Autorizado
-        }
-        Dictionary<Info, Aspect> ASFASenales = new Dictionary<Info, Aspect>()
-        {
-            {Info.Ninguno, Aspect.None},
-            {Info.Via_Libre, Aspect.Clear_2},
-            {Info.Via_Libre_Cond, Aspect.Clear_1},
-            {Info.Preanuncio_AV, Aspect.Approach_1},
-            {Info.Preanuncio, Aspect.Approach_1},
-            {Info.Anuncio_Precaucion, Aspect.Approach_2},
-            {Info.Anuncio_Parada, Aspect.Approach_1},
-            {Info.Previa_Rojo, Aspect.Stop},
-            {Info.Senal_Rojo, Aspect.Stop},
-            {Info.Rebase_Autorizado, Aspect.StopAndProceed}
-        };
-
-        public bool ControlArranque;
-        bool ControlL1;
-        bool ControlL2;
-        bool ControlL3;
-        bool ControlL5;
-        bool ControlL6;
-        bool ControlL7;
-        bool ControlL8;
-        bool ControlDesvio;
-        bool ControlPNDesprotegido;
-        bool ControlLTV;
-        bool ControlPreanuncioLTV;
-        bool LTVCumplida;
-        bool PNVelocidadBajada;
-        bool AumentoVelocidadL5;
-        bool AumentoVelocidadL6;
-        bool AumentoVelocidadL8;
-        bool AumentoVelocidadDesvio;
-        bool AumentoVelocidadLTV;
-        bool BalizaRecibida;
-        bool BalizaSenal;
-        public bool ModoAV = false;
-        public bool ModoCONV = true;
-
-        float VCControlArranque = 100f / 3.6f;
-        float VCIVlCond = 100f / 3.6f;
-        float VCFVlCond = 100f / 3.6f;
-        float VCIAnPar = 100f / 3.6f;
-        float VCFAnPar = 80f / 3.6f;
-        float VCFAnPre = 80f / 3.6f;
-        float VCFAnPreAumVel = 100f / 3.6f;
-        float VCFPrePar = 80f / 3.6f;
-        float VCFPreParAumVel = 100f / 3.6f;
-        float VCISecPreParA;
-        float VCFSecPreParA;
-        float VCISecPreParA1AumVel;
-        float VCFSecPreParA1AumVel;
-        float VCISecPreParA2AumVel;
-        float VCFSecPreParA2AumVel;
-        float VCFLTV = 60f / 3.6f;
-        float VCFLTVAumVel = 100f / 3.6f;
-        float VCFPN;
-        float VCIPar = 60f / 3.6f;
-        float VCFPar = 30f / 3.6f;
-        float VCPar = 40f / 3.6f;
-        float VCParAumVel = 100 / 3.6f;
-        float VCDesv = 60f / 3.6f;
-        float VCDesvAumVel = 90f / 3.6f;
-        float VControl;
-        float VControlFinal;
-        float VIntervencion;
-
-        float VCVlCondTReac = 9f;
-        float VIVlCondTReac = 9f;
-        float VCVlCondDec = 0.5f;
-        float VIVlCondDec = 0.5f;
-        float VCAnParTReac = 9f;
-        float VIAnParTReac = 9f;
-        float VCAnParDec = 0.5f;
-        float VIAnParDec = 0.5f;
-        float VCParTReac = 9f;
-        float VIParTReac = 9f;
-        float VCParDec = 0.5f;
-        float VIParDec = 0.5f;
-        float VCSecPreParATReac = 9f;
-        float VCSecPreParA1AumVelTReac = 9f;
-        float VCSecPreParA2AumVelTReac = 9f;
-        float VCSecPreParADec = 0.5f;
-        float VISecPreParATReac = 9f;
-        float VISecPreParA1AumVelTReac = 9f;
-        float VISecPreParA2AumVelTReac = 9f;
-        float VISecPreParADec = 0.5f;
-
-        float VCFAnParAV;
-        float VCFAnPreAV;
-        float VCFAnPreAumVelAV;
-        float VCFPreParAV;
-        float VCFPreParAumVelAV;
-        float VCDesvAV;
-        float VCDesvAumVelAV;
-        float VCFLTVAV;
-        float VCFLTVAumVelAV;
-        float VCISecPreParAAV;
-        float VCFSecPreParAAV;
-        float VCISecPreParA1AumVelAV;
-        float VCFSecPreParA1AumVelAV;
-        float VCISecPreParA2AumVelAV;
-        float VCFSecPreParA2AumVelAV;
-
-        int NumeroBaliza = 0;
-
-        public Info UltimaInfoRecibida;
-        Info AnteriorInfo;
-
-        Freq Frecuencia;
-        Freq UltimaFrecuencia;
-        Freq AnteriorFrecuencia;
-
-        Timer Curva;
-        Timer CurvaL1;
-        Timer CurvaL2;
-        Timer CurvaL7;
-        Timer CurvaL8;
-        Timer CurvaLTV;
-        Timer CurvaPN;
-        Timer LiberacionRojo;
-        Timer TiempoDesvio;
-        Timer TiempoAA;
-        Timer TiempoRebase;
-
-        OdoMeter Distancia;
-        OdoMeter DistanciaPN;
-        OdoMeter DistanciaPrevia;
-
-        public ASFADigital(TrainControlSystem tcs) : base(tcs)
-        {
-        }
-        protected void SetBalizaSenal()
-        {
-            BalizaSenal = true;
-            if (DistanciaPrevia.Triggered)
-            {
-                NumeroBaliza = 0;
-                AnteriorInfo = UltimaInfoRecibida;
-            }
-            NumeroBaliza++;
-            if ((NumeroBaliza == 2 && UltimaFrecuencia != Freq.L7) || UltimaFrecuencia == Freq.L8)
-            {
-                if (DistanciaPrevia.RemainingValue < 370f)
-                {
-                    DistanciaPrevia.Setup(0f);
-                    DistanciaPrevia.Start();
-                }
-            }
-            if (NumeroBaliza == 1 || (UltimaFrecuencia == Freq.L7 && DistanciaPrevia.RemainingValue < 370f))
-            {
-                NumeroBaliza = 1;
-                if (ModoActual == Modo.AVE) DistanciaPrevia.Setup(Distancia.RemainingValue - 1400f);
-                else DistanciaPrevia.Setup(Distancia.RemainingValue - 1550f);
-                DistanciaPrevia.Start();
-            }
-        }
-        protected override void SetVelocidades()
-        {
-            if (Math.Min(tcs.TrainMaxSpeed, TipoTren) >= MpS.FromKpH(190f)) TipoTren = MpS.FromKpH(200f);
-            else if (Math.Min(tcs.TrainMaxSpeed, TipoTren) >= MpS.FromKpH(170f)) TipoTren = MpS.FromKpH(180f);
-            else if (Math.Min(tcs.TrainMaxSpeed, TipoTren) >= MpS.FromKpH(150f)) TipoTren = MpS.FromKpH(160f);
-            else if (Math.Min(tcs.TrainMaxSpeed, TipoTren) >= MpS.FromKpH(130f)) TipoTren = MpS.FromKpH(140f);
-            else if (Math.Min(tcs.TrainMaxSpeed, TipoTren) >= MpS.FromKpH(110f)) TipoTren = MpS.FromKpH(120f);
-            else if (Math.Min(tcs.TrainMaxSpeed, TipoTren) >= MpS.FromKpH(95f)) TipoTren = MpS.FromKpH(100f);
-            else if (Math.Min(tcs.TrainMaxSpeed, TipoTren) >= MpS.FromKpH(85f)) TipoTren = MpS.FromKpH(90f);
-            else if (Math.Min(tcs.TrainMaxSpeed, TipoTren) <= MpS.FromKpH(85f)) TipoTren = MpS.FromKpH(80f);
-            if (TipoTren >= MpS.FromKpH(160f))
-            {
-                VCControlArranque = MpS.FromKpH(140f);
-                VCIVlCond = TipoTren;
-                VCFVlCond = MpS.FromKpH(160f);
-                VCIAnPar = MpS.FromKpH(160f);
-                VCFAnPar = MpS.FromKpH(80f);
-                VCFAnPre = MpS.FromKpH(80f);
-                VCFAnPreAumVel = MpS.FromKpH(100f);
-                VCFPrePar = MpS.FromKpH(80f);
-                VCFPreParAumVel = MpS.FromKpH(100f);
-                VCISecPreParA = MpS.FromKpH(80f);
-                VCFSecPreParA = MpS.FromKpH(60f);
-                VCISecPreParA1AumVel = MpS.FromKpH(100f);
-                VCFSecPreParA1AumVel = MpS.FromKpH(90f);
-                VCISecPreParA2AumVel = MpS.FromKpH(90f);
-                VCFSecPreParA2AumVel = MpS.FromKpH(80f);
-                VCFLTV = MpS.FromKpH(60f);
-                VCFLTVAumVel = MpS.FromKpH(100f);
-                VCFPN = MpS.FromKpH(30f);
-                VCIPar = MpS.FromKpH(60f);
-                VCFPar = MpS.FromKpH(30f);
-                VCPar = MpS.FromKpH(40f);
-                VCParAumVel = MpS.FromKpH(100f);
-                VCDesv = MpS.FromKpH(60f);
-                VCDesvAumVel = MpS.FromKpH(90f);
-
-                VCVlCondTReac = 7.5f;
-                VIVlCondTReac = 9f;
-                VCVlCondDec = 0.55f;
-                VIVlCondDec = 0.5f;
-                VCAnParTReac = 7.5f;
-                VIAnParTReac = 9f;
-                VCAnParDec = 0.6f;
-                VIAnParDec = 0.5f;
-                VCParTReac = 1.5f;
-                VIParTReac = 3.5f;
-                VCParDec = 0.6f;
-                VIParDec = 0.55f;
-                VCSecPreParATReac = 3.5f;
-                VISecPreParATReac = 5f;
-                VCSecPreParA1AumVelTReac = 3.5f;
-                VISecPreParA1AumVelTReac = 9f;
-                VCSecPreParA2AumVelTReac = 7.5f;
-                VISecPreParA2AumVelTReac = 9f;
-                VCSecPreParADec = 0.6f;
-                VISecPreParADec = 0.5f;
-
-                VCFAnParAV = MpS.FromKpH(100f);
-                VCFAnPreAV = MpS.FromKpH(120f);
-                VCFAnPreAumVelAV = MpS.FromKpH(160f);
-                VCFPreParAV = MpS.FromKpH(100f);
-                VCFPreParAumVelAV = MpS.FromKpH(120f);
-                VCDesvAV = MpS.FromKpH(100f);
-                VCDesvAumVelAV = MpS.FromKpH(160f);
-                VCFLTVAV = MpS.FromKpH(100f);
-                VCFLTVAumVelAV = MpS.FromKpH(160f);
-                VCISecPreParAAV = MpS.FromKpH(100f);
-                VCFSecPreParAAV = MpS.FromKpH(100f);
-                VCISecPreParA1AumVelAV = MpS.FromKpH(140f);
-                VCFSecPreParA1AumVelAV = MpS.FromKpH(120f);
-                VCISecPreParA2AumVelAV = MpS.FromKpH(120f);
-                VCFSecPreParA2AumVelAV = MpS.FromKpH(100f);
-            }
-            else if (TipoTren >= MpS.FromKpH(140f))
-            {
-                VCControlArranque = MpS.FromKpH(140f);
-                VCIVlCond = TipoTren;
-                VCFVlCond = TipoTren;
-                VCIAnPar = TipoTren;
-                VCFAnPar = MpS.FromKpH(80f);
-                VCFAnPre = MpS.FromKpH(80f);
-                VCFAnPreAumVel = MpS.FromKpH(100f);
-                VCFPrePar = MpS.FromKpH(80f);
-                VCFPreParAumVel = MpS.FromKpH(100f);
-                VCISecPreParA = MpS.FromKpH(80f);
-                VCFSecPreParA = MpS.FromKpH(60f);
-                VCISecPreParA1AumVel = MpS.FromKpH(100f);
-                VCFSecPreParA1AumVel = MpS.FromKpH(90f);
-                VCISecPreParA2AumVel = MpS.FromKpH(90f);
-                VCFSecPreParA2AumVel = MpS.FromKpH(80f);
-                VCFLTV = MpS.FromKpH(60f);
-                VCFLTVAumVel = MpS.FromKpH(100f);
-                VCFPN = MpS.FromKpH(30f);
-                VCIPar = MpS.FromKpH(60f);
-                VCFPar = MpS.FromKpH(30f);
-                VCPar = MpS.FromKpH(40f);
-                VCParAumVel = MpS.FromKpH(100f);
-                VCDesv = MpS.FromKpH(60f);
-                VCDesvAumVel = MpS.FromKpH(90f);
-
-                VCVlCondTReac = 0f;
-                VIVlCondTReac = 0f;
-                VCVlCondDec = 0f;
-                VIVlCondDec = 0f;
-                VCAnParTReac = 7.5f;
-                VIAnParTReac = 10f;
-                VCAnParDec = 0.6f;
-                VIAnParDec = 0.5f;
-                VCParTReac = 1.5f;
-                VIParTReac = 3.5f;
-                VCParDec = 0.6f;
-                VIParDec = 0.55f;
-                VCSecPreParATReac = 3.5f;
-                VISecPreParATReac = 5f;
-                VCSecPreParA1AumVelTReac = 3.5f;
-                VISecPreParA1AumVelTReac = 5f;
-                VCSecPreParA2AumVelTReac = 7.5f;
-                VISecPreParA2AumVelTReac = 10f;
-                VCSecPreParADec = 0.6f;
-                VISecPreParADec = 0.5f;
-
-                VCFAnParAV = MpS.FromKpH(100f);
-                VCFAnPreAV = MpS.FromKpH(120f);
-                VCFAnPreAumVelAV = TipoTren;
-                VCFPreParAV = MpS.FromKpH(100f);
-                VCFPreParAumVelAV = MpS.FromKpH(120f);
-                VCDesvAV = MpS.FromKpH(100f);
-                VCDesvAumVelAV = TipoTren;
-                VCFLTVAV = MpS.FromKpH(100f);
-                VCFLTVAumVelAV = TipoTren;
-                VCISecPreParAAV = MpS.FromKpH(100f);
-                VCFSecPreParAAV = MpS.FromKpH(100f);
-                VCISecPreParA1AumVelAV = MpS.FromKpH(140f);
-                VCFSecPreParA1AumVelAV = MpS.FromKpH(120f);
-                VCISecPreParA2AumVelAV = MpS.FromKpH(120f);
-                VCFSecPreParA2AumVelAV = MpS.FromKpH(100f);
-            }
-            else if (TipoTren >= MpS.FromKpH(120f))
-            {
-                VCControlArranque = TipoTren;
-                VCIVlCond = TipoTren;
-                VCFVlCond = TipoTren;
-                VCIAnPar = TipoTren;
-                VCFAnPar = MpS.FromKpH(80f);
-                VCFAnPre = MpS.FromKpH(80f);
-                VCFAnPreAumVel = MpS.FromKpH(100f);
-                VCFPrePar = MpS.FromKpH(80f);
-                VCFPreParAumVel = MpS.FromKpH(100f);
-                VCISecPreParA = MpS.FromKpH(80f);
-                VCFSecPreParA = MpS.FromKpH(60f);
-                VCISecPreParA1AumVel = MpS.FromKpH(100f);
-                VCFSecPreParA1AumVel = MpS.FromKpH(90f);
-                VCISecPreParA2AumVel = MpS.FromKpH(90f);
-                VCFSecPreParA2AumVel = MpS.FromKpH(80f);
-                VCFLTV = MpS.FromKpH(60f);
-                VCFLTVAumVel = MpS.FromKpH(100f);
-                VCFPN = MpS.FromKpH(30f);
-                VCIPar = MpS.FromKpH(60f);
-                VCFPar = MpS.FromKpH(30f);
-                VCPar = MpS.FromKpH(40f);
-                VCParAumVel = MpS.FromKpH(100f);
-                VCDesv = MpS.FromKpH(60f);
-                VCDesvAumVel = MpS.FromKpH(90f);
-
-                VCVlCondTReac = 0f;
-                VIVlCondTReac = 0f;
-                VCVlCondDec = 0f;
-                VIVlCondDec = 0f;
-                VCAnParTReac = 7.5f;
-                VIAnParTReac = 12f;
-                VCAnParDec = 0.46f;
-                VIAnParDec = 0.36f;
-                VCParTReac = 1.5f;
-                VIParTReac = 3.5f;
-                VCParDec = 0.6f;
-                VIParDec = 0.55f;
-                VCSecPreParATReac = 3.5f;
-                VISecPreParATReac = 5f;
-                VCSecPreParA1AumVelTReac = 3.5f;
-                VISecPreParA1AumVelTReac = 5f;
-                VCSecPreParA2AumVelTReac = 7.5f;
-                VISecPreParA2AumVelTReac = 12f;
-                VCSecPreParADec = 0.46f;
-                VISecPreParADec = 0.36f;
-
-                VCFAnParAV = MpS.FromKpH(100f);
-                VCFAnPreAV = MpS.FromKpH(120f);
-                VCFAnPreAumVelAV = TipoTren;
-                VCFPreParAV = MpS.FromKpH(100f);
-                VCFPreParAumVelAV = MpS.FromKpH(120f);
-                VCDesvAV = MpS.FromKpH(100f);
-                VCDesvAumVelAV = TipoTren;
-                VCFLTVAV = MpS.FromKpH(100f);
-                VCFLTVAumVelAV = TipoTren;
-                VCISecPreParAAV = MpS.FromKpH(100f);
-                VCFSecPreParAAV = MpS.FromKpH(100f);
-                VCISecPreParA1AumVelAV = TipoTren;
-                VCFSecPreParA1AumVelAV = TipoTren;
-                VCISecPreParA2AumVelAV = TipoTren;
-                VCFSecPreParA2AumVelAV = TipoTren;
-            }
-            else if (TipoTren >= MpS.FromKpH(110f))
-            {
-                VCControlArranque = TipoTren;
-                VCIVlCond = TipoTren;
-                VCFVlCond = TipoTren;
-                VCIAnPar = TipoTren;
-                VCFAnPar = MpS.FromKpH(80f);
-                VCFAnPre = MpS.FromKpH(80f);
-                VCFAnPreAumVel = MpS.FromKpH(100f);
-                VCFPrePar = MpS.FromKpH(80f);
-                VCFPreParAumVel = MpS.FromKpH(100f);
-                VCISecPreParA = MpS.FromKpH(80f);
-                VCFSecPreParA = MpS.FromKpH(60f);
-                VCISecPreParA1AumVel = MpS.FromKpH(100f);
-                VCFSecPreParA1AumVel = MpS.FromKpH(90f);
-                VCISecPreParA2AumVel = MpS.FromKpH(90f);
-                VCFSecPreParA2AumVel = MpS.FromKpH(80f);
-                VCFLTV = MpS.FromKpH(60f);
-                VCFLTVAumVel = MpS.FromKpH(100f);
-                VCFPN = MpS.FromKpH(30f);
-                VCIPar = MpS.FromKpH(60f);
-                VCFPar = MpS.FromKpH(25f);
-                VCPar = MpS.FromKpH(40f);
-                VCParAumVel = MpS.FromKpH(100f);
-                VCDesv = MpS.FromKpH(60f);
-                VCDesvAumVel = MpS.FromKpH(90f);
-
-                VCVlCondTReac = 0f;
-                VIVlCondTReac = 0f;
-                VCVlCondDec = 0f;
-                VIVlCondDec = 0f;
-                VCAnParTReac = 7.5f;
-                VIAnParTReac = 12f;
-                VCAnParDec = 0.46f;
-                VIAnParDec = 0.36f;
-                VCParTReac = 1.5f;
-                VIParTReac = 3.5f;
-                VCParDec = 0.6f;
-                VIParDec = 0.55f;
-                VCSecPreParATReac = 3.5f;
-                VISecPreParATReac = 5f;
-                VCSecPreParA1AumVelTReac = 3.5f;
-                VISecPreParA1AumVelTReac = 5f;
-                VCSecPreParA2AumVelTReac = 7.5f;
-                VISecPreParA2AumVelTReac = 12f;
-                VCSecPreParADec = 0.46f;
-                VISecPreParADec = 0.36f;
-
-                VCFAnParAV = MpS.FromKpH(100f);
-                VCFAnPreAV = MpS.FromKpH(120f);
-                VCFAnPreAumVelAV = TipoTren;
-                VCFPreParAV = MpS.FromKpH(100f);
-                VCFPreParAumVelAV = TipoTren;
-                VCDesvAV = MpS.FromKpH(100f);
-                VCDesvAumVelAV = TipoTren;
-                VCFLTVAV = MpS.FromKpH(100f);
-                VCFLTVAumVelAV = TipoTren;
-                VCISecPreParAAV = MpS.FromKpH(100f);
-                VCFSecPreParAAV = MpS.FromKpH(100f);
-                VCISecPreParA1AumVelAV = TipoTren;
-                VCFSecPreParA1AumVelAV = TipoTren;
-                VCISecPreParA2AumVelAV = TipoTren;
-                VCFSecPreParA2AumVelAV = TipoTren;
-            }
-            else if (TipoTren <= MpS.FromKpH(100f))
-            {
-                VCControlArranque = TipoTren;
-                VCIVlCond = TipoTren;
-                VCFVlCond = TipoTren;
-                VCIAnPar = TipoTren;
-                VCFAnPar = MpS.FromKpH(60f);
-                VCFAnPre = MpS.FromKpH(60f);
-                VCFAnPreAumVel = TipoTren;
-                VCFPrePar = MpS.FromKpH(60f);
-                VCFPreParAumVel = TipoTren;
-                VCISecPreParA = MpS.FromKpH(60f);
-                VCFSecPreParA = MpS.FromKpH(60f);
-                VCISecPreParA1AumVel = TipoTren;
-                VCFSecPreParA1AumVel = MpS.FromKpH(60f);
-                VCISecPreParA2AumVel = TipoTren;
-                VCFSecPreParA2AumVel = MpS.FromKpH(60f);
-                VCFLTV = MpS.FromKpH(60f);
-                VCFLTVAumVel = TipoTren;
-                VCFPN = MpS.FromKpH(30f);
-                VCIPar = MpS.FromKpH(60f);
-                VCFPar = MpS.FromKpH(25f);
-                VCPar = MpS.FromKpH(40f);
-                VCParAumVel = TipoTren;
-                VCDesv = MpS.FromKpH(60f);
-                VCDesvAumVel = MpS.FromKpH(90f);
-
-                VCVlCondTReac = 0f;
-                VIVlCondTReac = 0f;
-                VCVlCondDec = 0f;
-                VIVlCondDec = 0f;
-                VCAnParTReac = 7.5f;
-                VIAnParTReac = 11f;
-                VCAnParDec = 0.36f;
-                VIAnParDec = 0.26f;
-                VCParTReac = 2.5f;
-                VIParTReac = 5.5f;
-                VCParDec = 0.36f;
-                VIParDec = 0.26f;
-                VCSecPreParATReac = 0f;
-                VISecPreParATReac = 0f;
-                VCSecPreParA1AumVelTReac = 2.5f;
-                VISecPreParA1AumVelTReac = 5f;
-                VCSecPreParA2AumVelTReac = 7.5f;
-                VISecPreParA2AumVelTReac = 11f;
-                VCSecPreParADec = 0.36f;
-                VISecPreParADec = 0.26f;
-
-                VCFAnParAV = TipoTren;
-                VCFAnPreAV = TipoTren;
-                VCFAnPreAumVelAV = TipoTren;
-                VCFPreParAV = TipoTren;
-                VCFPreParAumVelAV = TipoTren;
-                VCDesvAV = TipoTren;
-                VCDesvAumVelAV = TipoTren;
-                VCFLTVAV = TipoTren;
-                VCFLTVAumVelAV = TipoTren;
-                VCISecPreParAAV = TipoTren;
-                VCFSecPreParAAV = MpS.FromKpH(80f);
-                VCISecPreParA1AumVelAV = TipoTren;
-                VCFSecPreParA1AumVelAV = TipoTren;
-                VCISecPreParA2AumVelAV = TipoTren;
-                VCFSecPreParA2AumVelAV = TipoTren;
-            }
-            if (tcs.SerieTren == 446)
-            {
-                VCControlArranque = MpS.FromKpH(100f);
-                VCIVlCond = MpS.FromKpH(100f);
-                VCFVlCond = MpS.FromKpH(100f);
-                VCIAnPar = MpS.FromKpH(100f);
-                VCFAnPar = MpS.FromKpH(80f);
-                VCFAnPre = MpS.FromKpH(80f);
-                VCFAnPreAumVel = MpS.FromKpH(100f);
-                VCFPrePar = MpS.FromKpH(80f);
-                VCFPreParAumVel = MpS.FromKpH(100f);
-                VCISecPreParA = MpS.FromKpH(80f);
-                VCFSecPreParA = MpS.FromKpH(60f);
-                VCISecPreParA1AumVel = MpS.FromKpH(100f);
-                VCFSecPreParA1AumVel = MpS.FromKpH(90f);
-                VCISecPreParA2AumVel = MpS.FromKpH(90f);
-                VCFSecPreParA2AumVel = MpS.FromKpH(80f);
-                VCFLTV = MpS.FromKpH(60f);
-                VCFLTVAumVel = MpS.FromKpH(100f);
-                VCFPN = MpS.FromKpH(30f);
-                VCIPar = MpS.FromKpH(60f);
-                VCFPar = MpS.FromKpH(30f);
-                VCPar = MpS.FromKpH(40f);
-                VCParAumVel = MpS.FromKpH(100f);
-                VCDesv = MpS.FromKpH(60f);
-                VCDesvAumVel = MpS.FromKpH(90f);
-
-                VCVlCondTReac = 0f;
-                VIVlCondTReac = 0f;
-                VCVlCondDec = 0f;
-                VIVlCondDec = 0f;
-                VCAnParTReac = 7.5f;
-                VIAnParTReac = 12f;
-                VCAnParDec = 0.46f;
-                VIAnParDec = 0.36f;
-                VCParTReac = 1.5f;
-                VIParTReac = 3.5f;
-                VCParDec = 0.6f;
-                VIParDec = 0.55f;
-                VCSecPreParATReac = 3.5f;
-                VISecPreParATReac = 5f;
-                VCSecPreParA1AumVelTReac = 3.5f;
-                VISecPreParA1AumVelTReac = 5f;
-                VCSecPreParA2AumVelTReac = 7.5f;
-                VISecPreParA2AumVelTReac = 12f;
-                VCSecPreParADec = 0.46f;
-                VISecPreParADec = 0.36f;
-            }
-            if ((tcs.SerieTren >= 100 && tcs.SerieTren < 200) || tcs.SerieTren == 252 || tcs.SerieTren == 319 || tcs.SerieTren == 333 || tcs.SerieTren == 334 || tcs.SerieTren == 335) ModoAV = true;
-            else ModoAV = false;
-            if (tcs.SerieTren >= 100 && tcs.SerieTren < 120) ModoCONV = false;
-            else ModoCONV = true;
-        }
-        
-        public bool OcultacionPressed;
-        public bool AumVelPressed;
-        public bool PaNPressed;
-        public bool LTVPressed;
-        public bool AnParPressed;
-        public bool AnPrePressed;
-        public bool PrePar_VLCondPressed;
-        public bool ModoPressed;
-        public int TimesPressed;
-        public bool BalizaASFAPassed = false;
-
-        public override void BotonesASFA()
-        {
-            if (tcs.ArduinoPort == null)
-            {
-                if (tcs.AnuncioLTVPassed) tcs.IsLTV = true;
-                if (tcs.PreviaPassed || tcs.SignalPassed) tcs.IsLTV = false;
-                if (tcs.PreviaPassed) tcs.IsPN = false;
-                if (Pressed && !PressedTimer.Started)
-                {
-                    TimesPressed++;
-                    ConexTimesPressed++;
-                    ButtonsTimer.Stop();
-                }
-                if ((TimesPressed != 0 || ConexTimesPressed != 0) && !Pressed && !ButtonsTimer.Started) ButtonsTimer.Start();
-                if (ButtonsTimer.Triggered) TimesPressed = ConexTimesPressed = 0;
-                ModoPressed = Pressed && TimesPressed == 3;
-                if (Pressed && ConexTimesPressed == 4)
-                {
-                    if (ConexPressed) ConexPressed = false;
-                    else ConexPressed = true;
-                }
-                if (Pressed && !PressedTimer.Started)
-                {
-                    PressedTimer.Start();
-                }
-                if (!Pressed)
-                {
-                    if (PressedTimer.Started) PressedTimer.Stop();
-                    AnParPressed = false;
-                    AnPrePressed = false;
-                    PrePar_VLCondPressed = false;
-                    LTVPressed = false;
-                    PaNPressed = AumVelPressed = RearmeFrenoPressed = false;
-                }
-                if (PressedTimer.Started && PressedTimer.RemainingValue < 2.5f)
-                {
-                    AnParPressed = (BalizaAspect == Aspect.Approach_1 || BalizaAspect == Aspect.Approach_3) && Rec.Started && UltimaFrecuencia == Freq.L1 && !tcs.IsLTV;
-                    AnPrePressed = BalizaAspect == Aspect.Approach_2 && Rec.Started && !tcs.IsLTV;
-                    PrePar_VLCondPressed = ((BalizaAspect == Aspect.Clear_1 && Rec.Started)) && !tcs.IsLTV;
-                    LTVPressed = (UltimaFrecuencia == Freq.L9 && Rec.Started) || ControlLTV && LTVCumplida && !Rec.Started || (UltimaFrecuencia == Freq.L1 && tcs.IntermediateLTVDist && Rec.Started && tcs.IsLTV);
-                    PaNPressed = (UltimaFrecuencia == Freq.L3 && Rec.Started) || (BalizaAspect == Aspect.Approach_1 && CurrentSignalSpeedLimitMpS() > MpS.FromKpH(25f) && CurrentSignalSpeedLimitMpS() < MpS.FromKpH(35f) && Rec.Started && tcs.IsPN);
-                    if (PaNPressed) AnParPressed = false;
-                    AumVelPressed = RearmeFrenoPressed = true;
-                }
-                if (PressedTimer.Triggered)
-                {
-                    AnParPressed = false;
-                    AnPrePressed = false;
-                    PrePar_VLCondPressed = false;
-                    PaNPressed = AumVelPressed = RearmeFrenoPressed = false;
-                    RebasePressed = !RebasePressed;
-                    PressedTimer.Stop();
-                }
-                OcultacionPressed = false;
-                if (LTVPressed) tcs.IsLTV = false;
-            }
-        }
-        public override void HandleEvent(TCSEvent evt, string message)
-        {
-            base.HandleEvent(evt, message);
-        }
-        public override void Initialize()
-        {
-            base.Initialize();
-            Rec = new Timer(tcs);
-            Rec.Setup(3f);
-            Curva = new Timer(tcs);
-            Curva.Setup(100f);
-            CurvaL1 = new Timer(tcs);
-            CurvaL1.Setup(100f);
-            CurvaL2 = new Timer(tcs);
-            CurvaL2.Setup(100f);
-            CurvaL7 = new Timer(tcs);
-            CurvaL7.Setup(100f);
-            CurvaL8 = new Timer(tcs);
-            CurvaL8.Setup(100f);
-            CurvaLTV = new Timer(tcs);
-            CurvaLTV.Setup(100f);
-            CurvaPN = new Timer(tcs);
-            CurvaPN.Setup(100f);
-            LiberacionRojo = new Timer(tcs);
-            LiberacionRojo.Setup(20f);
-            TiempoDesvio = new Timer(tcs);
-            TiempoDesvio.Setup(20f);
-            TiempoAA = new Timer(tcs);
-            TiempoAA.Setup(20f);
-            TiempoRebase = new Timer(tcs);
-            TiempoRebase.Setup(10f);
-            TiempoEncendido = new Timer(tcs);
-            TiempoEncendido.Setup(10f);
-
-            Distancia = new OdoMeter(tcs);
-            Distancia.Setup(2000f);
-            DistanciaPN = new OdoMeter(tcs);
-            DistanciaPN.Setup(1800f);
-            DistanciaPrevia = new OdoMeter(tcs);
-            DistanciaPrevia.Setup(450f);
-        }
-        public override void SetEmergency(bool emergency)
-        {
-            return;
-        }
-        public override void Update()
-        {
-            base.Update();
-            if (!Activated) return;
-            if (ModoPressed && ModoActual != Modo.EXT)
-            {
-                if (ModoAV && ModoCONV)
-                {
-                    if (SpeedMpS() < 0.1f) switch (ModoActual)
-                        {
-                            case Modo.CONV:
-                                ModoActual = Modo.AVE;
-                                break;
-                            case Modo.AVE:
-                                ModoActual = Modo.BTS;
-                                break;
-                            case Modo.BTS:
-                                ModoActual = Modo.MBRA;
-                                break;
-                            case Modo.MBRA:
-                                ModoActual = Modo.CONV;
-                                ControlArranque = true;
-                                break;
-                        }
-                    else if (ModoActual == Modo.CONV) ModoActual = Modo.AVE;
-                    else if (ModoActual == Modo.AVE) ModoActual = Modo.CONV;
-                }
-                if (ModoAV && !ModoCONV)
-                {
-                    if (SpeedMpS() < 0.1f) switch (ModoActual)
-                        {
-                            case Modo.AVE:
-                                ModoActual = Modo.BTS;
-                                break;
-                            case Modo.BTS:
-                                ModoActual = Modo.MBRA;
-                                break;
-                            case Modo.MBRA:
-                                ModoActual = Modo.AVE;
-                                ControlArranque = true;
-                                break;
-                        }
-                }
-                if (ModoCONV && !ModoAV)
-                {
-                    if (SpeedMpS() < 0.1f) switch (ModoActual)
-                        {
-                            case Modo.CONV:
-                                ModoActual = Modo.BTS;
-                                break;
-                            case Modo.BTS:
-                                ModoActual = Modo.MBRA;
-                                break;
-                            case Modo.MBRA:
-                                ModoActual = Modo.CONV;
-                                ControlArranque = true;
-                                break;
-                        }
-                }
-                ModoPressed = false;
-                TimesPressed = 0;
-            }
-            switch (ModoActual)
-            {
-                case Modo.CONV:
-                    if (ModoCONV) UpdateASFADigitalConv();
-                    else ModoActual = Modo.AVE;
-                    break;
-                case Modo.AVE:
-                    if (ModoAV) UpdateASFADigitalAVE();
-                    else ModoActual = Modo.CONV;
-                    break;
-                case Modo.MBRA:
-                    VControl = MpS.FromKpH(30f);
-                    VIntervencion = MpS.FromKpH(35f);
-                    VControlFinal = VControl;
-                    if (SpeedMpS() > 0.1f)
-                    {
-                        UltimaInfoRecibida = Info.Ninguno;
-                        ControlL1 = ControlL2 = ControlL3 = ControlL5 = ControlL6 = ControlL7 = ControlL8 = ControlArranque = ControlPNDesprotegido = ControlDesvio = ControlPreanuncioLTV = ControlLTV = false;
-                    }
-                    SetNextSignalAspect(ASFASenales[UltimaInfoRecibida]);
-                    SetNextSpeedLimitMpS(VControlFinal);
-                    SetInterventionSpeedLimitMpS(VIntervencion);
-                    break;
-                case Modo.BTS:
-                    VControl = VCControlArranque;
-                    VIntervencion = VCControlArranque + MpS.FromKpH(5f);
-                    VControlFinal = VCControlArranque;
-                    VControl = Math.Min(VControl, tcs.TrainMaxSpeed);
-                    VIntervencion = Math.Min(VIntervencion, tcs.TrainMaxSpeed + MpS.FromKpH(5f));
-                    VControlFinal = Math.Min(VControlFinal, tcs.TrainMaxSpeed);
-                    UltimaInfoRecibida = Info.Ninguno;
-                    SetNextSignalAspect(ASFASenales[UltimaInfoRecibida]);
-                    SetNextSpeedLimitMpS(VControlFinal);
-                    SetInterventionSpeedLimitMpS(VIntervencion);
-                    break;
-                case Modo.EXT:
-                    Urgencia = false;
-                    Eficacia = false;
-                    break;
-            }
-            if (Eficacia)
-            {
-                SetCurrentSpeedLimitMpS(0);
-                if (VControlFinal == Math.Min(TipoTren, tcs.TrainMaxSpeed) && (!ControlArranque || ControlLTV || ControlPNDesprotegido))
-                {
-                    SetVigilanceAlarmDisplay(false);
-                    SetVigilanceEmergencyDisplay(true);
-                }
-                else if (VControlFinal < 0.1f || VControl == VControlFinal)
-                {
-                    SetVigilanceAlarmDisplay(false);
-                    SetVigilanceEmergencyDisplay(false);
-                }
-                else
-                {
-                    SetVigilanceAlarmDisplay(true);
-                    SetVigilanceEmergencyDisplay(false);
-                }
-                if (SpeedMpS() >= VControl + 0.25f * (VIntervencion - VControl) && !Urgencia)
-                {
-                    TriggerSoundWarning1();
-                    SetOverspeedWarningDisplay(true);
-                }
-                if (SpeedMpS() >= VIntervencion && !Urgencia)
-                {
-                    Urgencia = true;
-                    TriggerSoundSystemDeactivate();
-                    TriggerSoundWarning2();
-                }
-                if (SpeedMpS() <= VControl - MpS.FromKpH(3f) || Urgencia)
-                {
-                    SetOverspeedWarningDisplay(false);
-                    TriggerSoundWarning2();
-                }
-                if (SpeedMpS() < MpS.FromKpH(5f) && Urgencia && RearmeFrenoPressed) Urgencia = false;
-            }
-            else if (ModoActual != Modo.EXT) Urgencia = false;
-        }
-        protected void UpdateASFADigitalConv()
-        {
-            BalizaSenal = false;
-            Frecuencia = Baliza();
-            BalizaRecibida = Frecuencia != Freq.FP;
-            if (BalizaRecibida)
-            {
-                Curva.Start();
-                Distancia.Start();
-                Rec.Stop();
-                AnteriorFrecuencia = UltimaFrecuencia;
-                UltimaFrecuencia = Frecuencia;
-                switch (Frecuencia)
-                {
-                    case Freq.L2:
-                        SetBalizaSenal();
-                        UltimaInfoRecibida = Info.Via_Libre_Cond;
-                        if (tcs.TrainMaxSpeed >= MpS.FromKpH(160f))
-                        {
-                            TriggerSoundPenalty1();
-                            Rec.Start();
-                            if (!ControlL2)
-                            {
-                                ControlL2 = true;
-                                if (ControlL1 || ControlL5 || ControlL6 || ControlL7 || ControlL8) CurvaL2.Setup(0f);
-                                else CurvaL2.Setup(100f);
-                                CurvaL2.Start();
-                            }
-                        }
-                        else
-                        {
-                            TriggerSoundInfo1();
-                            ControlL3 = true;
-                        }
-                        break;
-                    case Freq.L3:
-                        TriggerSoundInfo1();
-                        Rec.Start();
-                        break;
-                    case Freq.L4:
-                        TriggerSoundInfo1();
-                        ControlPNDesprotegido = false;
-                        PNVelocidadBajada = false;
-                        DistanciaPN.Stop();
-                        break;
-                    case Freq.L1:
-                        if (!ControlL1 && VControl > VCFAnPar)
-                        {
-                            ControlL1 = true;
-                            CurvaL1.Setup(100f);
-                            CurvaL1.Start();
-                        }
-                        TriggerSoundPenalty1();
-                        Rec.Start();
-                        break;
-                    case Freq.L5:
-                        ControlL5 = true;
-                        CurvaL1.Setup(100f);
-                        CurvaL1.Start();
-                        TriggerSoundPenalty1();
-                        Rec.Start();
-                        break;
-                    case Freq.L6:
-                        ControlL6 = true;
-                        CurvaL1.Setup(100f);
-                        CurvaL1.Start();
-                        TriggerSoundPenalty1();
-                        Rec.Start();
-                        break;
-                    case Freq.L9:
-                        TriggerSoundPenalty1();
-                        Rec.Start();
-                        break;
-                    case Freq.L7:
-                        SetBalizaSenal();
-                        UltimaInfoRecibida = Info.Previa_Rojo;
-                        CurvaL7.Start();
-                        ControlL7 = true;
-                        TriggerSoundPenalty1();
-                        break;
-                    case Freq.L8:
-                        SetBalizaSenal();
-                        UltimaInfoRecibida = Info.Senal_Rojo;
-                        CurvaL8.Start();
-                        ControlL8 = true;
-                        AumentoVelocidadL8 = false;
-                        LiberacionRojo.Stop();
-                        if (RebaseAuto)
-                        {
-                            UltimaInfoRecibida = Info.Rebase_Autorizado;
-                        }
-                        else Urgencia = true;
-                        TriggerSoundPenalty1();
-                        break;
-                    default:
-                        Alarma = true;
-                        break;
-                }
-            }
-            VControl = 0f;
-            VControlFinal = 0f;
-            VIntervencion = 0f;
-            if (Rec.Started)
-            {
-                switch (UltimaFrecuencia)
-                {
-                    case Freq.L1:
-                        if (Rec.Triggered)
-                        {
-                            Urgencia = true;
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Parada;
-                            ControlL1 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            Rec.Stop();
-                        }
-                        else if (AnParPressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Parada;
-                            ControlL1 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            TriggerSoundAlert1();
-                            Rec.Stop();
-                        }
-                        else if (AnPrePressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Precaucion;
-                            AumentoVelocidadDesvio = AnteriorInfo == Info.Anuncio_Precaucion && AumentoVelocidadL6;
-                            AumentoVelocidadL6 = false;
-                            ControlL6 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            TriggerSoundAlert2();
-                            Rec.Stop();
-                        }
-                        else if (PrePar_VLCondPressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Preanuncio;
-                            ControlL5 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            //TriggerSoundPreanuncio();
-                            Rec.Stop();
-                        }
-                        else if (LTVPressed)
-                        {
-                            AumentoVelocidadLTV = false;
-                            ControlLTV = true;
-                            ControlL1 = UltimaInfoRecibida == Info.Anuncio_Parada && ControlL1;
-                            LTVCumplida = false;
-                            CurvaLTV.Setup(Curva.RemainingValue);
-                            CurvaLTV.Start();
-                            TriggerSoundInfo2();
-                            Rec.Stop();
-                        }
-                        else if (PaNPressed)
-                        {
-                            ControlPNDesprotegido = true;
-                            ControlL1 = UltimaInfoRecibida == Info.Anuncio_Parada && ControlL1;
-                            CurvaPN.Setup(Curva.RemainingValue);
-                            CurvaPN.Start();
-                            DistanciaPN.Setup(Distancia.RemainingValue - 200f);
-                            DistanciaPN.Start();
-                            //TriggerSoundPN();
-                            TriggerSoundInfo2();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L2:
-                        if (Rec.Triggered)
-                        {
-                            Urgencia = true;
-                            ControlL2 = true;
-                            Rec.Stop();
-                        }
-                        else if (PrePar_VLCondPressed)
-                        {
-                            UltimaInfoRecibida = Info.Via_Libre_Cond;
-                            ControlL2 = true;
-                            TriggerSoundAlert1();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L3:
-                        if (Rec.Triggered)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Via_Libre;
-                            ControlL3 = true;
-                            Rec.Stop();
-                        }
-                        else if (PaNPressed)
-                        {
-                            ControlPNDesprotegido = false;
-                            DistanciaPN.Stop();
-                            PNVelocidadBajada = false;
-                            TriggerSoundInfo1();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L5:
-                        if (Rec.Triggered)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Preanuncio;
-                            Urgencia = true;
-                            ControlL5 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            Rec.Stop();
-                        }
-                        else if (PrePar_VLCondPressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Preanuncio;
-                            ControlL5 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            //TriggerSoundPreanuncio();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L6:
-                        if (Rec.Triggered)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Precaucion;
-                            Urgencia = true;
-                            ControlL6 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            Rec.Stop();
-                        }
-                        else if (AnPrePressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Precaucion;
-                            AumentoVelocidadDesvio = AnteriorInfo == Info.Anuncio_Precaucion && AumentoVelocidadL6;
-                            ControlL6 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            TriggerSoundAlert1();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L9:
-                        if (Rec.Triggered)
-                        {
-                            Urgencia = true;
-                            ControlPNDesprotegido = true;
-                            CurvaPN.Setup(Curva.RemainingValue);
-                            CurvaPN.Start();
-                            DistanciaPN.Setup(Distancia.RemainingValue - 200f);
-                            DistanciaPN.Start();
-                            Rec.Stop();
-                        }
-                        else if (LTVPressed)
-                        {
-                            LTVCumplida = false;
-                            AumentoVelocidadLTV = false;
-                            ControlLTV = true;
-                            CurvaLTV.Setup(Curva.RemainingValue);
-                            CurvaLTV.Start();
-                            TriggerSoundInfo2();
-                            Rec.Stop();
-                        }
-                        else if (PaNPressed)
-                        {
-                            ControlPNDesprotegido = true;
-                            CurvaPN.Setup(Curva.RemainingValue);
-                            CurvaPN.Start();
-                            DistanciaPN.Setup(Distancia.RemainingValue - 200f);
-                            DistanciaPN.Start();
-                            //TriggerSoundPN();
-                            Rec.Stop();
-                        }
-                        break;
-                }
-                if (!Rec.Started)
-                {
-                    Pressed = false;
-                    BotonesASFA();
-                }
-            }
-            if (RebasePressed && !TiempoRebase.Started)
-            {
-                RebaseAuto = true;
-                TriggerSoundPenalty2();
-                TiempoRebase.Start();
-                SetNextSignalAspect(Aspect.StopAndProceed);
-            }
-            if (!RebasePressed) TiempoRebase.Stop();
-            if ((TiempoRebase.Triggered || !TiempoRebase.Started) && RebaseAuto) RebasePressed =  RebaseAuto = false;
-            if ((UltimaInfoRecibida != Info.Senal_Rojo && UltimaInfoRecibida != Info.Rebase_Autorizado) && (AnteriorInfo == Info.Senal_Rojo || AnteriorInfo == Info.Rebase_Autorizado) && BalizaSenal && !LiberacionRojo.Started) LiberacionRojo.Start();
-            if (UltimaInfoRecibida == Info.Senal_Rojo || UltimaInfoRecibida == Info.Previa_Rojo) LiberacionRojo.Stop();
-            if (AnteriorInfo == Info.Anuncio_Precaucion)
-            {
-                if (BalizaSenal) TiempoDesvio.Start();
-                ControlDesvio = true;
-                CurvaL1.Setup(0f);
-                CurvaL1.Start();
-            }
-            if (AnteriorInfo != Info.Anuncio_Precaucion)
-            {
-                if (TiempoDesvio.Triggered && ControlDesvio) AumentoVelocidadDesvio = false;
-                TiempoDesvio.Stop();
-                ControlDesvio = false;
-            }
-            if (TiempoDesvio.Triggered) ControlDesvio = false;
-            if (BalizaSenal) ControlArranque = false;
-            if (UltimaInfoRecibida != Info.Anuncio_Parada && BalizaSenal) ControlL1 = false;
-            if (BalizaSenal) AumentoVelocidadL5 = AumentoVelocidadL6 = false;
-            if (UltimaInfoRecibida != Info.Preanuncio_AV && UltimaInfoRecibida != Info.Preanuncio && BalizaSenal)
-            {
-                ControlL5 = false;
-                AumentoVelocidadL5 = false;
-            }
-            if (UltimaInfoRecibida != Info.Anuncio_Precaucion && BalizaSenal)
-            {
-                ControlL6 = false;
-                AumentoVelocidadL6 = false;
-            }
-            if (UltimaInfoRecibida != Info.Previa_Rojo && BalizaSenal) ControlL7 = false;
-            if (LiberacionRojo.Triggered)
-            {
-                LiberacionRojo.Stop();
-                ControlL8 = false;
-                AumentoVelocidadL8 = false;
-            }
-            if (UltimaInfoRecibida != Info.Via_Libre_Cond && BalizaSenal) ControlL2 = false;
-            if (UltimaInfoRecibida != Info.Via_Libre && UltimaInfoRecibida != Info.Via_Libre_Cond && BalizaSenal) ControlL3 = false;
-            if (DistanciaPN.Triggered)
-            {
-                ControlPNDesprotegido = false;
-                PNVelocidadBajada = false;
-                DistanciaPN.Stop();
-            }
-            if (ControlArranque)
-            {
-                VControl = VCControlArranque;
-                VIntervencion = VCControlArranque + MpS.FromKpH(5f);
-                VControlFinal = VControl;
-            }
-            if (ControlL3)
-            {
-                VControl = Math.Min(tcs.TrainMaxSpeed, TipoTren);
-                VIntervencion = Math.Min(tcs.TrainMaxSpeed, TipoTren) + MpS.FromKpH(5f);
-                VControlFinal = VControl;
-            }
-            if (ControlL2)
-            {
-                VControl = Math.Max(Math.Min(VCIVlCond, VCIVlCond - VCVlCondDec * (100f - VCVlCondTReac - CurvaL2.RemainingValue)), VCFVlCond);
-                VIntervencion = Math.Max(Math.Min(VCIVlCond + MpS.FromKpH(3f), (VCIVlCond + MpS.FromKpH(3f)) - VIVlCondDec * (100f - VIVlCondTReac - CurvaL2.RemainingValue)), VCFVlCond + MpS.FromKpH(3f));
-                VControlFinal = VCFVlCond;
-            }
-            if (ControlL5)
-            {
-                if (AumVelPressed && CurvaL1.RemainingValue > 90f)
-                {
-                    AumentoVelocidadL5 = true;
-                    UltimaInfoRecibida = Info.Preanuncio_AV;
-                }
-                if (AumentoVelocidadL5)
-                {
-                    VControl = Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFPreParAumVel);
-                    VIntervencion = Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFPreParAumVel + MpS.FromKpH(3f));
-                    VControlFinal = VCFPreParAumVel;
-                }
-                else
-                {
-                    VControl = Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFPrePar);
-                    VIntervencion = Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFPrePar + MpS.FromKpH(3f));
-                    VControlFinal = VCFPrePar;
-                }
-            }
-            if (ControlL6)
-            {
-                if (AumVelPressed && CurvaL1.RemainingValue > 90f) AumentoVelocidadL6 = AumentoVelocidadDesvio = true;
-                if (AumentoVelocidadL6)
-                {
-                    VControl = Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFAnPreAumVel);
-                    VIntervencion = Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFAnPreAumVel + MpS.FromKpH(3f));
-                    VControlFinal = VCFAnPreAumVel;
-                }
-                else
-                {
-                    VControl = Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFAnPre);
-                    VIntervencion = Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFAnPre + MpS.FromKpH(3f));
-                    VControlFinal = VCFAnPre;
-                }
-            }
-            if (ControlL1)
-            {
-                VControl = Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFAnPar);
-                VIntervencion = Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFAnPar + MpS.FromKpH(3f));
-                VControlFinal = VCFAnPar;
-                if (AnteriorInfo == Info.Anuncio_Parada && UltimaInfoRecibida == Info.Anuncio_Parada)
-                {
-                    if (BalizaSenal) TiempoAA.Start();
-                    if (TiempoAA.Started && !TiempoAA.Triggered)
-                    {
-                        VControl = VControlFinal = VCDesv;
-                        VIntervencion = VCDesv + MpS.FromKpH(3f);
-                        CurvaL1.Setup(0f);
-                        CurvaL1.Start();
-                        SetNextSignalAspect(Aspect.Approach_3);
-                    }
-                }
-                if (AnteriorInfo == Info.Preanuncio)
-                {
-                    VControl = Math.Max(Math.Min(VCISecPreParA, VCISecPreParA - VCSecPreParADec * (100f - VCSecPreParATReac - CurvaL1.RemainingValue)), VCFSecPreParA);
-                    VIntervencion = Math.Max(Math.Min(VCISecPreParA + MpS.FromKpH(3f), (VCISecPreParA + MpS.FromKpH(3f)) - VCSecPreParADec * (100f - VCSecPreParATReac - CurvaL1.RemainingValue)), VCFSecPreParA + MpS.FromKpH(3f));
-                    VControlFinal = VCFSecPreParA;
-                    SetNextSignalAspect(Aspect.Approach_3);
-                }
-                if (AnteriorInfo == Info.Preanuncio_AV)
-                {
-                    if (NumeroBaliza == 1)
-                    {
-                        VControl = Math.Max(Math.Min(VCISecPreParA1AumVel, VCISecPreParA1AumVel - VCSecPreParADec * (100f - VCSecPreParA1AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA1AumVel);
-                        VIntervencion = Math.Max(Math.Min(VCISecPreParA1AumVel + MpS.FromKpH(3f), (VCISecPreParA1AumVel + MpS.FromKpH(3f)) - VCSecPreParADec * (100f - VCSecPreParA1AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA1AumVel + MpS.FromKpH(3f));
-                        VControlFinal = VCFSecPreParA1AumVel;
-                    }
-                    else
-                    {
-                        VControl = Math.Max(Math.Min(VCISecPreParA2AumVel, VCISecPreParA2AumVel - VCSecPreParADec * (100f - VCSecPreParA2AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA2AumVel);
-                        VIntervencion = Math.Max(Math.Min(VCISecPreParA2AumVel + MpS.FromKpH(3f), (VCISecPreParA2AumVel + MpS.FromKpH(3f)) - VCSecPreParADec * (100f - VCSecPreParA2AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA2AumVel + MpS.FromKpH(3f));
-                        VControlFinal = VCFSecPreParA2AumVel;
-                    }
-                    SetNextSignalAspect(Aspect.Approach_3);
-                }
-            }
-            if (ControlDesvio)
-            {
-                if (AumentoVelocidadDesvio)
-                {
-                    VControl = VCDesvAumVel;
-                    VIntervencion = VCDesvAumVel + MpS.FromKpH(3f);
-                    VControlFinal = VCDesvAumVel;
-                }
-                else
-                {
-                    VControl = VCDesv;
-                    VIntervencion = VCDesv + MpS.FromKpH(3f);
-                    VControlFinal = VCDesv;
-                }
-                SetNextSignalAspect(Aspect.Restricted);
-            }
-            if (ControlL8)
-            {
-                if (AumVelPressed && CurvaL8.RemainingValue > 90f) AumentoVelocidadL8 = true;
-                if (AumentoVelocidadL8)
-                {
-                    VControl = VCParAumVel;
-                    VIntervencion = VCParAumVel + MpS.FromKpH(3);
-                    VControlFinal = VControl;
-                }
-                else
-                {
-                    VControl = VCPar;
-                    VIntervencion = VCPar + MpS.FromKpH(3);
-                    VControlFinal = VControl;
-                }
-                if (UltimaInfoRecibida != Info.Senal_Rojo && UltimaInfoRecibida != Info.Rebase_Autorizado) SetNextSignalAspect(ASFASenales[AnteriorInfo]);
-                else SetNextSignalAspect(ASFASenales[UltimaInfoRecibida]);
-            }
-            if (ControlL7)
-            {
-                VControl = Math.Max(Math.Min(VCIPar, VCIPar - VCParDec * (100f - VCParTReac - CurvaL7.RemainingValue)), VCFPar);
-                VIntervencion = Math.Max(Math.Min(VCIPar + MpS.FromKpH(3f), (VCIPar + MpS.FromKpH(3f)) - VIParDec * (100f - VIParTReac - CurvaL7.RemainingValue)), VCFPar + MpS.FromKpH(3f));
-                VControlFinal = 0f;
-                if (NumeroBaliza == 2)
-                {
-                    VControl = Math.Max(Math.Min(VCFPar, VCFPar - VCParDec * (100f - VCParTReac - CurvaL7.RemainingValue)), VCFPar / 2f);
-                    VIntervencion = Math.Max(Math.Min(VCFPar + MpS.FromKpH(3f), (VCFPar + MpS.FromKpH(3f)) - VIParDec * (100f - VIParTReac - CurvaL7.RemainingValue)), VCFPar / 2f + MpS.FromKpH(3f));
-                }
-                if (DistanciaPrevia.Triggered)
-                {
-                    Urgencia = true;
-                    ControlL7 = false;
-                    ControlL1 = true;
-                    CurvaL1.Setup(0f);
-                    CurvaL1.Start();
-                    UltimaInfoRecibida = Info.Anuncio_Parada;
-                }
-            }
-            if (ControlLTV)
-            {
-                if (AumVelPressed && CurvaLTV.RemainingValue > 90f && !AumentoVelocidadLTV)
-                {
-                    Pressed = false;
-                    BotonesASFA();
-                    AumentoVelocidadLTV = true;
-                }
-                if (AumentoVelocidadLTV)
-                {
-                    VControl = Math.Min(VControl, Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaLTV.RemainingValue)), VCFLTVAumVel));
-                    VIntervencion = Math.Min(VIntervencion, Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaLTV.RemainingValue)), VCFLTVAumVel + MpS.FromKpH(3f)));
-                    VControlFinal = VCFLTVAumVel;
-                    if (SpeedMpS() < VCFLTVAumVel) LTVCumplida = true;
-                    if (LTVCumplida)
-                    {
-                        VControl = Math.Min(VControl, VCFLTVAumVel);
-                        VIntervencion = Math.Min(VIntervencion, VCFLTVAumVel + MpS.FromKpH(3f));
-                        if (LTVPressed) LTVCumplida = ControlLTV = AumentoVelocidadLTV = false;
-                    }
-                }
-                else
-                {
-                    VControl = Math.Min(VControl, Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaLTV.RemainingValue)), VCFLTV));
-                    VIntervencion = Math.Min(VIntervencion, Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaLTV.RemainingValue)), VCFLTV + MpS.FromKpH(3f)));
-                    VControlFinal = VCFLTV;
-                    if (SpeedMpS() < VCFLTV) LTVCumplida = true;
-                    if (LTVCumplida)
-                    {
-                        VControl = Math.Min(VControl, VCFLTV);
-                        VIntervencion = Math.Min(VIntervencion, VCFLTV + MpS.FromKpH(3f));
-                        if (LTVPressed) LTVCumplida = ControlLTV = false;
-                    }
-                }
-            }
-            if (ControlPNDesprotegido)
-            {
-                if (SpeedMpS() <= MpS.FromKpH(30f)) PNVelocidadBajada = true;
-                if (PNVelocidadBajada)
-                {
-                    VControl = Math.Min(VControl, VCFAnPar);
-                    VIntervencion = Math.Min(VIntervencion, VCFAnPar + MpS.FromKpH(3f));
-                    VControlFinal = Math.Min(VControlFinal, VCFAnPar);
-                }
-                else
-                {
-                    VControl = Math.Min(VControl, Math.Max(Math.Min(VCIAnPar, VCIAnPar - VCAnParDec * (100f - VCAnParTReac - CurvaPN.RemainingValue)), MpS.FromKpH(30f)));
-                    VIntervencion = Math.Min(VIntervencion, Math.Max(Math.Min(VCIAnPar + MpS.FromKpH(3f), (VCIAnPar + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaPN.RemainingValue)), MpS.FromKpH(33f)));
-                    VControlFinal = Math.Min(VControlFinal, MpS.FromKpH(30f));
-                }
-            }
-            VControl = Math.Min(VControl, tcs.TrainMaxSpeed);
-            VIntervencion = Math.Min(VIntervencion, tcs.TrainMaxSpeed + MpS.FromKpH(5f));
-            VControlFinal = Math.Min(VControlFinal, tcs.TrainMaxSpeed);
-            //SetCurrentSpeedLimitMpS(VControl);
-            SetNextSpeedLimitMpS(VControlFinal);
-            SetInterventionSpeedLimitMpS(VIntervencion);
-            if (!ControlDesvio && !RebaseAuto && !ControlL8 && (!TiempoAA.Started || TiempoAA.Triggered)) SetNextSignalAspect(ASFASenales[UltimaInfoRecibida]);
-        }
-        protected void UpdateASFADigitalAVE()
-        {
-            BalizaSenal = false;
-            Frecuencia = Baliza();
-            BalizaRecibida = Frecuencia != Freq.FP;
-            if (BalizaRecibida)
-            {
-                Curva.Start();
-                Distancia.Start();
-                Rec.Stop();
-                AnteriorFrecuencia = UltimaFrecuencia;
-                UltimaFrecuencia = Frecuencia;
-                switch (Frecuencia)
-                {
-                    case Freq.L3:
-                        TriggerSoundInfo1();
-                        SetBalizaSenal();
-                        UltimaInfoRecibida = Info.Via_Libre;
-                        ControlL3 = true;
-                        break;
-                    case Freq.L1:
-                        if (!ControlL1 && VControl > VCFAnParAV)
-                        {
-                            ControlL1 = true;
-                            CurvaL1.Setup(100f);
-                            CurvaL1.Start();
-                        }
-                        TriggerSoundPenalty1();
-                        Rec.Start();
-                        break;
-                    case Freq.L5:
-                        ControlL5 = true;
-                        CurvaL1.Setup(100f);
-                        CurvaL1.Start();
-                        TriggerSoundPenalty1();
-                        Rec.Start();
-                        break;
-                    case Freq.L6:
-                        ControlL6 = true;
-                        CurvaL1.Setup(100f);
-                        CurvaL1.Start();
-                        TriggerSoundPenalty1();
-                        Rec.Start();
-                        break;
-                    case Freq.L9:
-                        TriggerSoundPenalty1();
-                        ControlLTV = true;
-                        CurvaLTV.Setup(100f);
-                        CurvaLTV.Start();
-                        Rec.Start();
-                        break;
-                    case Freq.L7:
-                        SetBalizaSenal();
-                        UltimaInfoRecibida = Info.Previa_Rojo;
-                        CurvaL7.Start();
-                        ControlL7 = true;
-                        TriggerSoundPenalty1();
-                        break;
-                    case Freq.L8:
-                        SetBalizaSenal();
-                        UltimaInfoRecibida = Info.Senal_Rojo;
-                        CurvaL8.Start();
-                        ControlL8 = true;
-                        AumentoVelocidadL8 = false;
-                        LiberacionRojo.Stop();
-                        if (RebaseAuto)
-                        {
-                            UltimaInfoRecibida = Info.Rebase_Autorizado;
-                        }
-                        else Urgencia = true;
-                        TriggerSoundPenalty1();
-                        break;
-                    default:
-                        Alarma = true;
-                        break;
-                }
-            }
-            if (Rec.Started)
-            {
-                switch (UltimaFrecuencia)
-                {
-                    case Freq.L1:
-                        if (Rec.Triggered)
-                        {
-                            Urgencia = true;
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Parada;
-                            ControlL1 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            Rec.Stop();
-                        }
-                        else if (AnParPressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Parada;
-                            ControlL1 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            TriggerSoundAlert1();
-                            Rec.Stop();
-                        }
-                        else if (AnPrePressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Precaucion;
-                            AumentoVelocidadDesvio = AnteriorInfo == Info.Anuncio_Precaucion && AumentoVelocidadL6;
-                            ControlL6 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            TriggerSoundAlert2();
-                            Rec.Stop();
-                        }
-                        else if (PrePar_VLCondPressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Preanuncio;
-                            ControlL5 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            //TriggerSoundPreanuncio();
-                            Rec.Stop();
-                        }
-                        else if (LTVPressed)
-                        {
-                            AumentoVelocidadLTV = false;
-                            ControlLTV = true;
-                            ControlL1 = UltimaInfoRecibida == Info.Anuncio_Parada && ControlL1;
-                            LTVCumplida = false;
-                            CurvaLTV.Setup(Curva.RemainingValue);
-                            CurvaLTV.Start();
-                            TriggerSoundInfo2();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L5:
-                        if (Rec.Triggered)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Preanuncio;
-                            Urgencia = true;
-                            ControlL5 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            Rec.Stop();
-                        }
-                        else if (PrePar_VLCondPressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Preanuncio;
-                            ControlL5 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            //TriggerSoundPreanuncio();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L6:
-                        if (Rec.Triggered)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Precaucion;
-                            Urgencia = true;
-                            ControlL6 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            Rec.Stop();
-                        }
-                        else if (AnPrePressed)
-                        {
-                            SetBalizaSenal();
-                            UltimaInfoRecibida = Info.Anuncio_Precaucion;
-                            AumentoVelocidadDesvio = AnteriorInfo == Info.Anuncio_Precaucion && AumentoVelocidadL6;
-                            ControlL6 = true;
-                            CurvaL1.Setup(Curva.RemainingValue);
-                            CurvaL1.Start();
-                            TriggerSoundAlert1();
-                            Rec.Stop();
-                        }
-                        break;
-                    case Freq.L9:
-                        if (Rec.Triggered)
-                        {
-                            Urgencia = true;
-                            Rec.Stop();
-                        }
-                        else if (LTVPressed)
-                        {
-                            TriggerSoundInfo2();
-                            Rec.Stop();
-                        }
-                        break;
-                }
-                if (!Rec.Started)
-                {
-                    Pressed = false;
-                    BotonesASFA();
-                }
-            }
-            if (RebasePressed && !TiempoRebase.Started)
-            {
-                RebaseAuto = true;
-                TriggerSoundPenalty2();
-                TiempoRebase.Start();
-                SetNextSignalAspect(Aspect.StopAndProceed);
-            }
-            if (!RebasePressed) TiempoRebase.Stop();
-            if ((TiempoRebase.Triggered || !TiempoRebase.Started) && RebaseAuto) RebaseAuto = false;
-            if ((UltimaInfoRecibida != Info.Senal_Rojo && UltimaInfoRecibida != Info.Rebase_Autorizado) && (AnteriorInfo == Info.Senal_Rojo || AnteriorInfo == Info.Rebase_Autorizado) && BalizaSenal && !LiberacionRojo.Started) LiberacionRojo.Start();
-            if (UltimaInfoRecibida == Info.Senal_Rojo || UltimaInfoRecibida == Info.Previa_Rojo) LiberacionRojo.Stop();
-            if (AnteriorInfo == Info.Anuncio_Precaucion)
-            {
-                if (BalizaSenal) TiempoDesvio.Start();
-                ControlDesvio = true;
-                CurvaL1.Setup(0f);
-                CurvaL1.Start();
-            }
-            if (AnteriorInfo != Info.Anuncio_Precaucion)
-            {
-                if (TiempoDesvio.Triggered && ControlDesvio) AumentoVelocidadDesvio = false;
-                TiempoDesvio.Stop();
-                ControlDesvio = false;
-            }
-            if (TiempoDesvio.Triggered) ControlDesvio = false;
-            if (BalizaSenal) ControlArranque = false;
-            if (UltimaInfoRecibida != Info.Anuncio_Parada && BalizaSenal) ControlL1 = false;
-            if (BalizaSenal) AumentoVelocidadL5 = AumentoVelocidadL6 = false;
-            if (UltimaInfoRecibida != Info.Preanuncio_AV && UltimaInfoRecibida != Info.Preanuncio && BalizaSenal)
-            {
-                ControlL5 = false;
-                AumentoVelocidadL5 = false;
-            }
-            if (UltimaInfoRecibida != Info.Anuncio_Precaucion && BalizaSenal)
-            {
-                ControlL6 = false;
-                AumentoVelocidadL6 = false;
-            }
-            if (UltimaInfoRecibida != Info.Previa_Rojo && BalizaSenal) ControlL7 = false;
-            if (LiberacionRojo.Triggered)
-            {
-                LiberacionRojo.Stop();
-                ControlL8 = false;
-                AumentoVelocidadL8 = false;
-            }
-            if (UltimaInfoRecibida != Info.Via_Libre && BalizaSenal) ControlL3 = false;
-            if (ControlArranque)
-            {
-                VControl = VCControlArranque;
-                VIntervencion = VCControlArranque + MpS.FromKpH(5f);
-                VControlFinal = VControl;
-            }
-            if (ControlL3)
-            {
-                VControl = Math.Min(tcs.TrainMaxSpeed, TipoTren);
-                VIntervencion = Math.Min(tcs.TrainMaxSpeed, TipoTren) + MpS.FromKpH(5f);
-                VControlFinal = VControl;
-            }
-            if (ControlL5)
-            {
-                if (AumVelPressed && CurvaL1.RemainingValue > 90f)
-                {
-                    AumentoVelocidadL5 = true;
-                    UltimaInfoRecibida = Info.Preanuncio_AV;
-                }
-                if (AumentoVelocidadL5)
-                {
-                    VControl = Math.Max(Math.Min(TipoTren, TipoTren - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFPreParAumVelAV);
-                    VIntervencion = Math.Max(Math.Min(TipoTren + MpS.FromKpH(5f), (TipoTren + MpS.FromKpH(5f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFPreParAumVelAV + MpS.FromKpH(3f));
-                    VControlFinal = VCFPreParAumVelAV;
-                }
-                else
-                {
-                    VControl = Math.Max(Math.Min(TipoTren, TipoTren - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFPreParAV);
-                    VIntervencion = Math.Max(Math.Min(TipoTren + MpS.FromKpH(5f), (TipoTren + MpS.FromKpH(5f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFPreParAV + MpS.FromKpH(3f));
-                    VControlFinal = VCFPreParAV;
-                }
-            }
-            if (ControlL6)
-            {
-                if (AumVelPressed && CurvaL1.RemainingValue > 90f) AumentoVelocidadL6 = AumentoVelocidadDesvio = true;
-                if (AumentoVelocidadL6)
-                {
-                    VControl = Math.Max(Math.Min(TipoTren, TipoTren - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFAnPreAumVelAV);
-                    VIntervencion = Math.Max(Math.Min(TipoTren + MpS.FromKpH(3f), (TipoTren + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFAnPreAumVelAV + MpS.FromKpH(3f));
-                    VControlFinal = VCFAnPreAumVelAV;
-                }
-                else
-                {
-                    VControl = Math.Max(Math.Min(TipoTren, TipoTren - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFAnPreAV);
-                    VIntervencion = Math.Max(Math.Min(TipoTren + MpS.FromKpH(3f), (TipoTren + MpS.FromKpH(3f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFAnPreAV + MpS.FromKpH(3f));
-                    VControlFinal = VCFAnPreAV;
-                }
-            }
-            if (ControlL1)
-            {
-                VControl = Math.Max(Math.Min(TipoTren, TipoTren - VCAnParDec * (100f - VCAnParTReac - CurvaL1.RemainingValue)), VCFAnParAV);
-                VIntervencion = Math.Max(Math.Min(TipoTren + MpS.FromKpH(5f), (TipoTren + MpS.FromKpH(5f)) - VIAnParDec * (100f - VIAnParTReac - CurvaL1.RemainingValue)), VCFAnParAV + MpS.FromKpH(3f));
-                VControlFinal = VCFAnParAV;
-                if (AnteriorInfo == Info.Anuncio_Parada && UltimaInfoRecibida == Info.Anuncio_Parada)
-                {
-                    if (BalizaSenal) TiempoAA.Start();
-                    if (TiempoAA.Started && !TiempoAA.Triggered)
-                    {
-                        VControl = VControlFinal = VCDesvAV;
-                        VIntervencion = VCDesvAV + MpS.FromKpH(3f);
-                        CurvaL1.Setup(0f);
-                        CurvaL1.Start();
-                        SetNextSignalAspect(Aspect.Approach_3);
-                    }
-                }
-                if (AnteriorInfo == Info.Preanuncio)
-                {
-                    VControl = Math.Max(Math.Min(VCISecPreParAAV, VCISecPreParAAV - VCSecPreParADec * (100f - VCSecPreParATReac - CurvaL1.RemainingValue)), VCFSecPreParAAV);
-                    VIntervencion = Math.Max(Math.Min(VCISecPreParAAV + MpS.FromKpH(3f), (VCISecPreParAAV + MpS.FromKpH(3f)) - VCSecPreParADec * (100f - VCSecPreParATReac - CurvaL1.RemainingValue)), VCFSecPreParAAV + MpS.FromKpH(3f));
-                    VControl = VCFSecPreParAAV;
-                }
-                if (AnteriorInfo == Info.Preanuncio_AV)
-                {
-                    if (NumeroBaliza == 1)
-                    {
-                        VControl = Math.Max(Math.Min(VCISecPreParA1AumVelAV, VCISecPreParA1AumVelAV - VCSecPreParADec * (100f - VCSecPreParA1AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA1AumVelAV);
-                        VIntervencion = Math.Max(Math.Min(VCISecPreParA1AumVelAV + MpS.FromKpH(3f), (VCISecPreParA1AumVelAV + MpS.FromKpH(3f)) - VCSecPreParADec * (100f - VCSecPreParA1AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA1AumVelAV + MpS.FromKpH(3f));
-                        VControl = VCFSecPreParA1AumVelAV;
-                    }
-                    else
-                    {
-                        VControl = Math.Max(Math.Min(VCISecPreParA2AumVelAV, VCISecPreParA2AumVelAV - VCSecPreParADec * (100f - VCSecPreParA2AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA2AumVelAV);
-                        VIntervencion = Math.Max(Math.Min(VCISecPreParA2AumVelAV + MpS.FromKpH(3f), (VCISecPreParA2AumVelAV + MpS.FromKpH(3f)) - VCSecPreParADec * (100f - VCSecPreParA2AumVelTReac - CurvaL1.RemainingValue)), VCFSecPreParA2AumVelAV + MpS.FromKpH(3f));
-                        VControl = VCFSecPreParA2AumVelAV;
-                    }
-                }
-            }
-            if (ControlDesvio)
-            {
-                if (AumentoVelocidadDesvio)
-                {
-                    VControl = VCDesvAumVelAV;
-                    VIntervencion = VCDesvAumVelAV + MpS.FromKpH(3f);
-                    VControlFinal = VCDesvAumVelAV;
-                }
-                else
-                {
-                    VControl = VCDesvAV;
-                    VIntervencion = VCDesvAV + MpS.FromKpH(3f);
-                    VControlFinal = VCDesvAV;
-                }
-                SetNextSignalAspect(Aspect.Restricted);
-            }
-            if (ControlL8)
-            {
-                if (AumVelPressed && CurvaL8.RemainingValue > 90f) AumentoVelocidadL8 = true;
-                if (AumentoVelocidadL8)
-                {
-                    VControl = VCParAumVel;
-                    VIntervencion = VCParAumVel + MpS.FromKpH(3);
-                    VControlFinal = VControl;
-                }
-                else
-                {
-                    VControl = VCPar;
-                    VIntervencion = VCPar + MpS.FromKpH(3);
-                    VControlFinal = VControl;
-                }
-                if (UltimaInfoRecibida != Info.Senal_Rojo && UltimaInfoRecibida != Info.Rebase_Autorizado) SetNextSignalAspect(ASFASenales[AnteriorInfo]);
-                else SetNextSignalAspect(ASFASenales[UltimaInfoRecibida]);
-            }
-            if (ControlL7)
-            {
-                VControl = Math.Max(Math.Min(VCIPar, VCIPar - VCParDec * (100f - VCParTReac - CurvaL7.RemainingValue)), VCFPar);
-                VIntervencion = Math.Max(Math.Min(VCIPar + MpS.FromKpH(3f), (VCIPar + MpS.FromKpH(3f)) - VIParDec * (100f - VIParTReac - CurvaL7.RemainingValue)), VCFPar + MpS.FromKpH(3f));
-                VControlFinal = 0f;
-                if (NumeroBaliza == 2)
-                {
-                    VControl = Math.Max(Math.Min(VCFPar, VCFPar - VCParDec * (100f - VCParTReac - CurvaL7.RemainingValue)), VCFPar / 2f);
-                    VIntervencion = Math.Max(Math.Min(VCFPar + MpS.FromKpH(3f), (VCFPar + MpS.FromKpH(3f)) - VIParDec * (100f - VIParTReac - CurvaL7.RemainingValue)), VCFPar / 2f + MpS.FromKpH(3f));
-                }
-                if (DistanciaPrevia.Triggered)
-                {
-                    Urgencia = true;
-                    ControlL7 = false;
-                    ControlL1 = true;
-                    CurvaL1.Setup(0f);
-                    CurvaL1.Start();
-                    UltimaInfoRecibida = Info.Anuncio_Parada;
-                }
-            }
-            if (ControlLTV)
-            {
-                if (AumVelPressed && CurvaLTV.RemainingValue > 90f && !AumentoVelocidadLTV)
-                {
-                    Pressed = false;
-                    BotonesASFA();
-                    AumentoVelocidadLTV = true;
-                }
-                if (AumentoVelocidadLTV)
-                {
-                    VControl = Math.Min(VControl, Math.Max(Math.Min(TipoTren, TipoTren - VCAnParDec * (100f - VCAnParTReac - CurvaLTV.RemainingValue)), VCFLTVAumVelAV));
-                    VIntervencion = Math.Min(VIntervencion, Math.Max(Math.Min(TipoTren + MpS.FromKpH(5f), (TipoTren + MpS.FromKpH(5f)) - VIAnParDec * (100f - VIAnParTReac - CurvaLTV.RemainingValue)), VCFLTVAumVelAV + MpS.FromKpH(3f)));
-                    VControlFinal = VCFLTVAumVelAV;
-                    if (SpeedMpS() < VCFLTVAumVel) LTVCumplida = true;
-                    if (LTVCumplida)
-                    {
-                        VControl = Math.Min(VControl, VCFLTVAumVelAV);
-                        VIntervencion = Math.Min(VIntervencion, VCFLTVAumVelAV + MpS.FromKpH(3f));
-                        if (LTVPressed) LTVCumplida = ControlLTV = AumentoVelocidadLTV = false;
-                    }
-                }
-                else
-                {
-                    VControl = Math.Min(VControl, Math.Max(Math.Min(TipoTren, TipoTren - VCAnParDec * (100f - VCAnParTReac - CurvaLTV.RemainingValue)), VCFLTVAV));
-                    VIntervencion = Math.Min(VIntervencion, Math.Max(Math.Min(TipoTren + MpS.FromKpH(5f), (TipoTren + MpS.FromKpH(5f)) - VIAnParDec * (100f - VIAnParTReac - CurvaLTV.RemainingValue)), VCFLTVAV + MpS.FromKpH(3f)));
-                    VControlFinal = VCFLTVAV;
-                    if (SpeedMpS() < VCFLTV) LTVCumplida = true;
-                    if (LTVCumplida)
-                    {
-                        VControl = Math.Min(VControl, VCFLTVAV);
-                        VIntervencion = Math.Min(VIntervencion, VCFLTVAV + MpS.FromKpH(3f));
-                        if (LTVPressed) LTVCumplida = ControlLTV = false;
-                    }
-                }
-            }
-            VControl = Math.Min(VControl, tcs.TrainMaxSpeed);
-            VIntervencion = Math.Min(VIntervencion, tcs.TrainMaxSpeed + MpS.FromKpH(5f));
-            VControlFinal = Math.Min(VControlFinal, tcs.TrainMaxSpeed);
-            //SetCurrentSpeedLimitMpS(VControl);
-            SetNextSpeedLimitMpS(VControlFinal);
-            SetInterventionSpeedLimitMpS(VIntervencion);
-            if (!ControlDesvio && !RebaseAuto && !ControlL8 && (!TiempoAA.Started || TiempoAA.Triggered)) SetNextSignalAspect(ASFASenales[UltimaInfoRecibida]);
         }
     }
     public class ETCS : TrainControlSystem
@@ -4971,7 +3031,7 @@ namespace ORTS.Scripting.Script
                         if (!Messages.Contains(m)) Messages.Add(m);
                     }
                     CurrentMode = Mode.UN;
-                    if (!tcs.ASFA.Activated)
+                    if (!(tcs.ASFA as ASFAclasico).Activated)
                     {
                         tcs.ActiveCCS = TCS_Spain.CCS.ETCS;
                     }
@@ -4979,18 +3039,20 @@ namespace ORTS.Scripting.Script
                     {
                         if (tcs.ASFA != null)
                         {
-                            if (tcs.ASFA is ASFADigital) ((ASFADigital)tcs.ASFA).ModoActual = ASFADigital.Modo.EXT;
-                            tcs.ASFA.Eficacia = false;
+                            if (tcs.ASFA is ASFADigital)
+                            {
+                                (tcs.ASFA as ASFADigital).AKT = true;
+                                (tcs.ASFA as ASFADigital).CON = false;
+                            }
                         }
                         var a = Messages.Find(x => x.Equals(m));
                         if (a != null && a.Acknowledged)
                         {
-                            if (tcs.ASFA != null && tcs.ASFA.Activated)
+                            if (tcs.ASFA != null && (tcs.ASFA as ASFAclasico).Activated)
                             {
                                 tcs.ActiveCCS = TCS_Spain.CCS.ASFA;
-                                ((ASFADigital)tcs.ASFA).ModoActual = ((ASFADigital)tcs.ASFA).ModoCONV ? ASFADigital.Modo.CONV : ASFADigital.Modo.AVE;
-                                tcs.ASFA.Eficacia = true;
-                                SetCurrentSpeedLimitMpS(0);
+                                (tcs.ASFA as ASFADigital).AKT = false;
+                                (tcs.ASFA as ASFADigital).CON = true;
                             }
                         }
                     }
@@ -4999,8 +3061,12 @@ namespace ORTS.Scripting.Script
                     tcs.ActiveCCS = TCS_Spain.CCS.ETCS;
                     if (tcs.ASFA != null)
                     {
-                        if (tcs.ASFA is ASFADigital) ((ASFADigital)tcs.ASFA).ModoActual = ASFADigital.Modo.EXT;
-                        tcs.ASFA.Eficacia = false;
+                        if (tcs.ASFA is ASFADigital)
+                        {
+                            (tcs.ASFA as ASFADigital).AKT = true;
+                            (tcs.ASFA as ASFADigital).CON = false;
+                        }
+                        else (tcs.ASFA as ASFAclasico).Eficacia = false;
                     }
                     break;
                 case Level.L2:
@@ -5008,8 +3074,12 @@ namespace ORTS.Scripting.Script
                     tcs.ActiveCCS = TCS_Spain.CCS.ETCS;
                     if (tcs.ASFA != null)
                     {
-                        if (tcs.ASFA is ASFADigital) ((ASFADigital)tcs.ASFA).ModoActual = ASFADigital.Modo.EXT;
-                        tcs.ASFA.Eficacia = false;
+                        if (tcs.ASFA is ASFADigital)
+                        {
+                            (tcs.ASFA as ASFADigital).AKT = true;
+                            (tcs.ASFA as ASFADigital).CON = false;
+                        }
+                        else (tcs.ASFA as ASFAclasico).Eficacia = false;
                     }
                     ERM = RBC(TRBCM);
                     if (ERM != null)
@@ -5113,7 +3183,7 @@ namespace ORTS.Scripting.Script
                 SetVigilanceAlarmDisplay(false);
             }
             if (CurrentMode == Mode.TR) Trip();
-            if (tcs.ASFA.RebasePressed && SpeedMpS() < NationalValues.V_NVALLOWOVTRP)
+            /*if (tcs.ASFA.RebasePressed && SpeedMpS() < NationalValues.V_NVALLOWOVTRP)
             {
                 SetVigilanceAlarmDisplay(true);
                 SetVigilanceEmergencyDisplay(true);
@@ -5123,7 +3193,7 @@ namespace ORTS.Scripting.Script
                 tcs.ASFA.Pressed = false;
                 tcs.ASFA.RebasePressed = false;
                 tcs.ASFA.BotonesASFA();
-            }
+            }*/
             if (CurrentLevel != Level.L0)
             {
                 if (AcknowledgeEoA && Pressed)
@@ -5215,7 +3285,7 @@ namespace ORTS.Scripting.Script
         protected void PostTripReverse()
         {
             if (PostTrip == -1) PostTrip = DistanceM();
-            if ((tcs.TrainDirection == Direction.Forward && DistanceM() - PostTrip > NationalValues.D_NVROLL) || (tcs.TrainDirection == Direction.Reverse && DistanceM() - PostTrip > NationalValues.D_NVPOTRP))
+            if ((IsDirectionForward() && DistanceM() - PostTrip > NationalValues.D_NVROLL) || (IsDirectionReverse() && DistanceM() - PostTrip > NationalValues.D_NVPOTRP))
             {
                 EmergencyBraking = true;
             }
@@ -5250,8 +3320,8 @@ namespace ORTS.Scripting.Script
         bool RollawayApply;
         protected void Rollaway()
         {
-            if (RollDistance == -1 || tcs.TrainDirection != Direction.N) RollDistance = DistanceM();
-            if (tcs.TrainDirection == Direction.N)
+            if (RollDistance == -1 || !IsDirectionNeutral()) RollDistance = DistanceM();
+            if (IsDirectionNeutral())
             {
                 if (DistanceM() - RollDistance > NationalValues.D_NVROLL) RollawayApply = true;
             }
@@ -6389,7 +4459,7 @@ namespace ORTS.Scripting.Script
         }
         public override void Update()
         {
-            if (!Activated || !tcs.IsAlerterEnabled() || ((TCS_Spain)tcs).TrainDirection == Direction.N)
+            if (!Activated || !tcs.IsAlerterEnabled() || tcs.IsDirectionNeutral())
             {
                 HMReleasedAlertTimer.Stop();
                 HMReleasedEmergencyTimer.Stop();
@@ -6443,6 +4513,2203 @@ namespace ORTS.Scripting.Script
             {
                 HMEmergencyBraking = false;
                 SetVigilanceEmergencyDisplay(false);
+            }
+        }
+    }
+    enum FrecASFA
+    {
+        FP,
+        L1,
+        L2,
+        L3,
+        L4,
+        L5,
+        L6,
+        L7,
+        L8,
+        L9,
+        L10,
+        L11
+    }
+    class ASFADigital : ASFA
+    {
+        TCS_Spain tcs;
+        //Combinador general
+        public bool Connected;
+        int T;
+        byte[] DIV; //Información del vehículo
+        //Transición a LZB/ERTMS
+        public bool AKT = false; //Inhibir freno de urgencia
+        public bool CON = true; //Conexión de ASFA
+        //Control de freno de emergencia
+        bool FE = true;
+        //Panel repetidor
+        public BotonesRepetidor Botones = new BotonesRepetidor();
+        public DisplayASFA Display;
+        //Controles
+        Control ControlActivo;
+        List<Control> Controles = new List<Control>();
+        List<Control> ControlesPN = new List<Control>();
+        List<ControlLVI> ControlesLVI = new List<ControlLVI>();
+        //Estado
+        ModoASFA Modo;
+        FrecASFA Captador;
+        float O;
+        float InicioRebase;
+        bool Eficacia;
+        bool RebaseAuto;
+        public ASFADigital(TCS_Spain tcs)
+        {
+            this.tcs = tcs;
+            Display = new DisplayASFA(tcs);
+            Botones.getList().ForEach(delegate (Boton b) { b.setTime(tcs.ClockTime); b.setRepetidor(Botones, Display); });
+        }
+        byte[] getDIVData()
+        {
+            byte[] DIV = new byte[64];
+            if ((tcs.SerieTren >= 100 && tcs.SerieTren < 200) || tcs.SerieTren == 252 || tcs.SerieTren == 319 || tcs.SerieTren == 333 || tcs.SerieTren == 334 || tcs.SerieTren == 335) DIV[14] |= 1 << 5;
+            if (tcs.SerieTren < 100 || tcs.SerieTren >= 120) DIV[14] |= 1 << 4;
+            DIV[16] |= (byte)(tcs.SerieTren == 446 ? 1 : 0);
+            DIV[18] = (byte)(tcs.TrainMaxSpeed*3.6);
+            DIV[24] = (byte)(tcs.SerieTren / 100);
+            DIV[25] = (byte)(tcs.SerieTren % 100);
+            return DIV;
+        }
+        void TriggerSound(string s)
+        {
+            switch(s)
+            {
+                case "S1-1":
+                    tcs.TriggerSoundInfo1();
+                    break;
+                case "S2-1":
+                    tcs.TriggerSoundPenalty1();
+                    break;
+                case "S2-2":
+                    tcs.TriggerSoundAlert1();
+                    break;
+                case "S2-3":
+                    tcs.TriggerSoundAlert2();
+                    break;
+                case "S2-4":
+                    tcs.TriggerSoundAlert2();
+                    break;
+                case "S2-5":
+                    tcs.TriggerSoundInfo2();
+                    break;
+                case "S2-6":
+                    tcs.TriggerSoundInfo2();
+                    break;
+                case "S3-1":
+                    tcs.TriggerSoundWarning1();
+                    break;
+                case "S3-2":
+                    //tcs.TriggerSoundWarning1();
+                    break;
+                case "S3-3":
+                    tcs.TriggerSoundSystemDeactivate();
+                    break;
+                case "S3-4":
+                    tcs.TriggerSoundWarning1();
+                    break;
+                case "S3-5":
+                    tcs.TriggerSoundWarning1();
+                    break;
+                case "S4":
+                    tcs.TriggerSoundPenalty2();
+                    break;
+                case "S5":
+                    tcs.TriggerSoundWarning1();
+                    break;
+                case "S6":
+                    tcs.TriggerSoundPenalty1();
+                    break;
+            }
+        }
+        void StopSound(string s)
+        {
+            switch (s)
+            {
+                case "S3-1":
+                    tcs.TriggerSoundWarning2();
+                    break;
+                case "S3-2":
+                    //tcs.TriggerSoundWarning2();
+                    break;
+                case "S3-4":
+                    tcs.TriggerSoundWarning2();
+                    break;
+                case "S3-5":
+                    tcs.TriggerSoundWarning2();
+                    break;
+                case "S5":
+                    tcs.TriggerSoundWarning2();
+                    break;
+            }
+        }
+        bool Fase2;
+        public void Conex()
+        {
+            DIV = getDIVData();
+            Fase2 = (DIV[14] & 1) == 1;
+            T = tcs.GetIntParameter("ASFA", "TipoTren", 160);
+            T = Math.Min(T, DIV[18]);
+            Connected = true;
+            Modo = ModoASFA.CONV;
+            Controles.Add(new ControlArranque(T));
+        }
+        Control ControlTransitorio;
+        Control ControlSeñal;
+        Control AnteriorControlSeñal;
+        FrecASFA UltimaFrecValida;
+        float TiempoUltimaRecepcion;
+        float DistanciaUltimaRecepcion;
+        float VentanaL4;
+        float VentanaL10;
+        float VentanaL11;
+        float VentanaIgnoreL9;
+        public void Update()
+        {
+            if (!Connected)
+            {
+                FE = false;
+                return;
+            }
+            if (!AKT && !CON) FE = true;
+            else if (AKT && !CON)
+            {
+                FE = false;
+                Modo = ModoASFA.EXT;
+                Eficacia = false;
+            }
+            if (Modo == ModoASFA.EXT) return;
+            /*O = Math.Min(MpS.ToKpH(tcs.SpeedMpS()) + 5, T);
+            if (O <= 80) O = 80;
+            else if (O <= 100) O = 100;
+            else if (O <= 120) O = 120;
+            else if (O <= 140) O = 140;
+            else if (O <= 160) O = 160;
+            else if (O <= 180) O = 180;
+            else O = 200;*/ //ToDo: Averiguar quién es el iluminado de Adif al que se le ocurrió esto
+            O = T;
+            if (O == 100 && (DIV[16] & 1) != 0) O = 120; 
+            if (Modo == ModoASFA.MBRA)
+            {
+                //ToDo: Control de velocidad de maniobras
+            }
+            else
+            {
+                RecepciónBaliza();
+                if (RecStart != 0 && RecStart < tcs.ClockTime())
+                {
+                    if (UltimaFrecValida == FrecASFA.L1)
+                    {
+                        if (Botones.AnuncioParada.TimePressed >= 0.5f)
+                        {
+                            TriggerSound("S2-2");
+                            AnuncioParada();
+                            RecStart = 0;
+                        }
+                        if (!Fase2)
+                        {
+                            if (Botones.AnuncioPrecaución.TimePressed >= 0.5f)
+                            {
+                                TriggerSound("S2-3");
+                                AnuncioPrecaucion();
+                                RecStart = 0;
+                            }
+                            if (Botones.Preanuncio.TimePressed >= 0.5f)
+                            {
+                                TriggerSound("S2-3");
+                                PreanuncioParada();
+                                RecStart = 0;
+                            }
+                            if (Botones.LVI.TimePressed>=0.5f)
+                            {
+                                TriggerSound("S2-6");
+                                var c = new ControlLVIL1F1(TiempoUltimaRecepcion, O, Modo);
+                                ControlesLVI.Add(c);
+                                Controles.Add(c);
+                                RecStart = 0;
+                            }
+                            if (Botones.PN.TimePressed >= 0.5f)
+                            {
+                                TriggerSound("S2-6");
+                                PNDesprotegido();
+                                RecStart = 0;
+                            }
+                        }
+                    }
+                    if (UltimaFrecValida == FrecASFA.L2)
+                    {
+                        if (Botones.VL_Condicional.TimePressed >= 0.5f)
+                        {
+                            TriggerSound("S2-2");
+                            ViaLibreCondicional();
+                            RecStart = 0;
+                        }
+                    }
+                    if (UltimaFrecValida == FrecASFA.L3)
+                    {
+                        if (!Fase2)
+                        {
+                            if (Botones.PN.TimePressed >= 0.5f)
+                            {
+                                TriggerSound("S1-1");
+                                PNProtegido();
+                                RecStart = 0;
+                            }
+                        }
+                    }
+                    if (UltimaFrecValida == FrecASFA.L7)
+                    {
+                        Botones.Alarma.Iluminado = true;
+                        if (Botones.Alarma.TimePressed >= 0.5f)
+                        {
+                            RecStart = 0;
+                        }
+                    }
+                    if(UltimaFrecValida == FrecASFA.L10 || UltimaFrecValida == FrecASFA.L11)
+                    {
+                        if (Botones.LVI.TimePressed >= 0.5f)
+                        {
+                            TriggerSound("S2-6");
+                            RecStart = 0;
+                        }
+                    }
+                    if (RecStart == 0)
+                    {
+                        Botones.apagar();
+                        desactivarControlTransitorio();
+                    }
+                    else if (RecEnd < tcs.ClockTime())
+                    {
+                        Botones.apagar();
+                        notRec(UltimaFrecValida);
+                    }
+                }
+                if (Botones.Rebase.TimePressed >= 0.5f && !RebaseAuto)
+                {
+                    TriggerSound("S4");
+                    RebaseAuto = true;
+                    InicioRebase = tcs.ClockTime();
+                }
+                if (InicioRebase + 10 < tcs.ClockTime()) RebaseAuto = false;
+                if(AlarmaStart!=0 && Eficacia && Botones.Alarma.TimePressed >= 0.5f)
+                {
+                    AlarmaStart = 0;
+                    Botones.Alarma.Iluminado = false;
+                }
+                actualizarControles();
+                actualizarEstado();
+            }
+        }
+        float UltimaFP = 0;
+        void RecepciónBaliza()
+        {
+            InfoSeñalDistinta = false;
+            FrecASFA last = Captador;
+            Captador = Baliza();
+            if(Captador == FrecASFA.FP)
+            {
+                Eficacia = true;
+                UltimaFP = tcs.ClockTime();
+            }
+            else
+            {
+                if(Captador != last)
+                {
+                    if (UltimaFP + 0.5f < tcs.ClockTime()) Alarma();
+                }
+                if(Captador == last)
+                {
+                    if (tcs.SpeedMpS() > 1 && UltimaFP + 0.5f < tcs.ClockTime()) Alarma();
+                    return;
+                }
+                if (Captador == FrecASFA.L9 && VentanaIgnoreL9 != 0 && VentanaIgnoreL9 + 35 > DistanciaUltimaRecepcion) return;
+                if (RecStart != 0 && UltimaFrecValida != FrecASFA.L3)
+                {
+                    if((Captador != FrecASFA.L10 && Captador != FrecASFA.L11)||(VentanaL10 == 0 && VentanaL11 == 0)) notRec(UltimaFrecValida);
+                }
+                UltimaFrecValida = Captador;
+                TiempoUltimaRecepcion = tcs.ClockTime();
+                DistanciaUltimaRecepcion = tcs.DistanceM();
+                if (Captador == FrecASFA.L1)
+                {
+                    if (Fase2)
+                    {
+                        TriggerSound("S2-1");
+                        StartRec(TiempoUltimaRecepcion);
+                        AnuncioParada();
+                    }
+                    else
+                    {
+                        ControlTransitorio = new ControlAnuncioParada(TiempoUltimaRecepcion, O, Modo);
+                        Botones.LVI.Iluminado = true;
+                        Botones.PN.Iluminado = true;
+                        Botones.Preanuncio.Iluminado = true;
+                        Botones.AnuncioParada.Iluminado = true;
+                        Botones.AnuncioPrecaución.Iluminado = true;
+                        TriggerSound("S2-1");
+                        StartRec(TiempoUltimaRecepcion);
+                    }
+                }
+                if (Captador == FrecASFA.L2)
+                {
+                    if (DIV[18] > 160)
+                    {
+                        Botones.VL_Condicional.Iluminado = true;
+                        TriggerSound("S2-1");
+                        StartRec(TiempoUltimaRecepcion);
+                    }
+                    else TriggerSound("S1-1");
+                    ViaLibreCondicional();
+                }
+                if (Captador == FrecASFA.L3)
+                {
+                    TriggerSound("S1-1");
+                    if (Fase2) ViaLibre();
+                    else
+                    {
+                        ControlTransitorio = new ControlViaLibre(T);
+                        Botones.PN.Iluminado = true;
+                        StartRec(TiempoUltimaRecepcion);
+                    }
+                }
+                if (Captador == FrecASFA.L4)
+                {
+                    if (VentanaL4 == 0 || VentanaL4 + 35 > tcs.DistanceM())
+                    {
+                        //ControlTransitorio = new ControlPNProtegido();
+                    }
+                    else
+                    {
+                        //ControlCambioInfraestructura
+                        desactivarControlTransitorio();
+                    }
+                }
+                if (Captador == FrecASFA.L5)
+                {
+                    Botones.Preanuncio.Iluminado = true;
+                    TriggerSound("S2-1");
+                    StartRec(TiempoUltimaRecepcion);
+                    PreanuncioParada();
+                }
+                if (Captador == FrecASFA.L6)
+                {
+                    Botones.AnuncioPrecaución.Iluminado = true;
+                    TriggerSound("S2-1");
+                    StartRec(TiempoUltimaRecepcion);
+                    AnuncioPrecaucion();
+                }
+                if (Captador == FrecASFA.L7)
+                {
+                    TriggerSound("S6");
+                    StartRec(TiempoUltimaRecepcion + 1);
+                    PreviaParada();
+                }
+                if (Captador == FrecASFA.L8)
+                {
+                    TriggerSound("S6");
+                    Parada();
+                }
+                if (Captador == FrecASFA.L9)
+                {
+                    Botones.PN.Iluminado = true;
+                    TriggerSound("S2-1");
+                    StartRec(TiempoUltimaRecepcion);
+                    PNDesprotegido();
+                }
+                if (Captador == FrecASFA.L10)
+                {
+                    if (VentanaL11 != 0 && VentanaL11 + 8 > DistanciaUltimaRecepcion)
+                    {
+                        Botones.LVI.Iluminado = true;
+                        TriggerSound("S1-1");
+                        int Vf = 0;
+                        if (Modo == ModoASFA.CONV || Modo == ModoASFA.AV) Vf = 80;
+                        ControlLVI c = new ControlLVI(O, Vf, true, ControlTransitorio.TiempoInicial);
+                        Controles.Add(c);
+                        ControlesLVI.Add(c);
+                        VentanaL11 = 0;
+                        desactivarControlTransitorio();
+                    }
+                    else if (VentanaL10 != 0 && VentanaL10 + 8 > DistanciaUltimaRecepcion)
+                    {
+                        Botones.LVI.Iluminado = true;
+                        TriggerSound("S1-1");
+                        int Vf = 0;
+                        if (Modo == ModoASFA.CONV || Modo == ModoASFA.AV) Vf = 160;
+                        ControlLVI c = new ControlLVI(O, Vf, true, ControlTransitorio.TiempoInicial);
+                        Controles.Add(c);
+                        ControlesLVI.Add(c);
+                        VentanaL10 = 0;
+                        desactivarControlTransitorio();
+                    }
+                    else
+                    {
+                        if (!Fase2) VentanaIgnoreL9 = DistanciaUltimaRecepcion;
+                        VentanaL10 = DistanciaUltimaRecepcion;
+                        Botones.LVI.Iluminado = true;
+                        TriggerSound("S2-1");
+                        StartRec(TiempoUltimaRecepcion);
+                        ControlTransitorio = new ControlLVI(O, 40, false, TiempoUltimaRecepcion);
+                    }
+                }
+                if (Captador == FrecASFA.L11)
+                {
+                    if (VentanaL11 != 0 && VentanaL11 + 8 > DistanciaUltimaRecepcion)
+                    {
+                        Botones.LVI.Iluminado = true;
+                        TriggerSound("S1-1");
+                        float Vf = ControlTransitorio.VC.OrdenadaFinal;
+                        ControlLVI c = new ControlLVI(O, Vf, true, ControlTransitorio.TiempoInicial);
+                        Controles.Add(c);
+                        ControlesLVI.Add(c);
+                        VentanaL11 = 0;
+                        desactivarControlTransitorio();
+                    }
+                    else if (VentanaL10 != 0 && VentanaL10 + 8 > DistanciaUltimaRecepcion)
+                    {
+                        Botones.LVI.Iluminado = true;
+                        TriggerSound("S1-1");
+                        int Vf = 0;
+                        if (Modo == ModoASFA.CONV || Modo == ModoASFA.AV) Vf = 120;
+                        ControlLVI c = new ControlLVI(O, Vf, true, ControlTransitorio.TiempoInicial);
+                        Controles.Add(c);
+                        ControlesLVI.Add(c);
+                        VentanaL10 = 0;
+                        desactivarControlTransitorio();
+                    }
+                    else
+                    {
+                        if (!Fase2) VentanaIgnoreL9 = DistanciaUltimaRecepcion;
+                        VentanaL11 = DistanciaUltimaRecepcion;
+                        Botones.LVI.Iluminado = true;
+                        TriggerSound("S2-1");
+                        StartRec(TiempoUltimaRecepcion);
+                        ControlTransitorio = new ControlLVI(O, 40, false, TiempoUltimaRecepcion);
+                    }
+                }
+                if (ControlTransitorio != null) Controles.Add(ControlTransitorio);
+            }
+        }
+        float AlarmaStart = 0;
+        void Alarma()
+        {
+            AlarmaStart = UltimaFP;
+            Botones.Alarma.Iluminado = true;
+        }
+        void actualizarEstado()
+        {
+            float max = ControlActivo.getIF(tcs.ClockTime());
+            float control = ControlActivo.getVC(tcs.ClockTime());
+            float target = ControlActivo.VC.OrdenadaFinal;
+            float overspeed1 = control + 0.25f * (max - control);
+            float overspeed2 = control + 0.5f * (max - control);
+            float vreal = MpS.ToKpH(tcs.SpeedMpS());
+            if (FE)
+            {
+                Display.Urgencia = true;
+            }
+            if (vreal > max && !FE)
+            {
+                StopSound("S3-2");
+                StopSound("S3-1");
+                Urgencias();
+            }
+            else if (vreal > overspeed2)
+            {
+                TriggerSound("S3-2");
+                Display.Sobrevelocidad = 2;
+            }
+            else if (vreal > overspeed1)
+            {
+                TriggerSound("S3-1");
+                StopSound("S3-2");
+                Display.Sobrevelocidad = 1;
+            }
+            else if (vreal < control - 3)
+            {
+                StopSound("S3-1");
+                Display.Sobrevelocidad = 0;
+            }
+            if (FE && vreal < 5)
+            {
+                Botones.Rearme.Iluminado = true;
+                if (Botones.Rearme.TimePressed >= 0.5f)
+                {
+                    FE = false;
+                    Botones.Rearme.Iluminado = false;
+                }
+            }
+            int targetdisplay;
+            if (ControlActivo is ControlViaLibre) targetdisplay = 0;
+            else if (ControlActivo is ControlPreviaSeñalParada || target == control) targetdisplay = 1;
+            else targetdisplay = 2;
+            Display.EstadoVobj = targetdisplay;
+            Display.PasoDesv = Controles.Exists(x => x is ControlPasoDesvío);
+            Display.SecAA = Controles.Exists(x => x is ControlSecuenciaAA || x is ControlSecuenciaAN_A);
+            Display.PNProt = ControlesPN.Exists(x => x is ControlPNProtegido);
+            Display.PNsin = ControlesPN.Count != 0/*ControlesPN.Exists(x => x is ControlPNDesprotegido)*/;
+            int lvi = 0;
+            if(ControlesLVI.Count!=0)
+            {
+                lvi = 2;
+                foreach(ControlLVI c in ControlesLVI)
+                {
+                    if (!c.isReached(tcs.ClockTime(), MpS.ToKpH(tcs.SpeedMpS()))) lvi = 1; 
+                }
+            }
+            Display.LVI = lvi;
+            Display.Urgencia = FE;
+            Display.Eficacia = Eficacia;
+            Display.Vobjetivo = ControlActivo is ControlPreviaSeñalParada ? 0 : (int)target;
+            Display.Vactual = (int)Math.Ceiling(Math.Round(MpS.ToKpH(tcs.SpeedMpS()), 1));
+        }
+        void actualizarControles()
+        {
+            if (AlarmaStart != 0 && AlarmaStart + 3 < tcs.ClockTime()) FE = true;
+            if(VentanaL10 != 0 && VentanaL10 + 8 < tcs.DistanceM())
+            {
+                ControlesLVI.Add(ControlTransitorio as ControlLVI);
+                ControlTransitorio = null;
+                VentanaL10 = 0;
+            }
+            if (VentanaL11 != 0 && VentanaL11 + 8 < tcs.DistanceM())
+            {
+                ControlesLVI.Add(ControlTransitorio as ControlLVI);
+                ControlTransitorio = null;
+                VentanaL11 = 0;
+            }
+            if(PrevDist+450 < tcs.DistanceM() && SigNo == 0)
+            {
+                SigNo = 2;
+                if (ControlSeñal is ControlPreviaSeñalParada)
+                {
+                    FE = true;
+                    Display.Info = AspectosASFA.A;
+                    //Velo();
+                    addControlSeñal(new ControlAnuncioParada(0, O, Modo));
+                }
+                if (Controles.Exists(x => x is ControlSecuenciaAN_A)) addControlSeñal(ControlSeñal);
+            }
+            List<Control> Caducados = new List<Control>();
+            foreach (Control c in Controles)
+            {
+                if ((c.DistanciaVigencia != 0 && c.DistanciaVigencia + c.DistanciaInicial < tcs.DistanceM()) || (c.TiempoVigencia != 0 && c.TiempoVAlcanzada != 0 && c.TiempoVigencia + c.TiempoVAlcanzada < tcs.ClockTime()))
+                {
+                    Caducados.Add(c);
+                }
+            }
+            if (ControlesPN.Count > 6)
+            {
+                FE = true;
+                ControlesPN.RemoveAt(0);
+            }
+            if (ControlesLVI.Count > 4)
+            {
+                Control candidato = null;
+                foreach (Control lvi in ControlesLVI)
+                {
+                    if (candidato == null || lvi.getVC(tcs.ClockTime()) > lvi.getVC(tcs.ClockTime())) candidato = lvi;
+                }
+                Caducados.Add(candidato);
+            }
+            if (ControlesLVI.Count != 0)
+            {
+                ControlLVI lvi = null;
+                foreach (ControlLVI c in ControlesLVI)
+                {
+                    if (lvi == null || lvi.getVC(tcs.ClockTime()) > c.getVC(tcs.ClockTime())) lvi = c;
+                }
+                if (lvi.isReached(tcs.ClockTime(), MpS.ToKpH(tcs.SpeedMpS())))
+                {
+                    Botones.LVI.Iluminado = true;
+                    if (Botones.LVI.TimePressed >= 0.5f)
+                    {
+                        Botones.LVI.Iluminado = false;
+                        Caducados.Add(lvi);
+                    }
+                    if (lvi is ControlLVIL1F1 && lvi.TiempoInicial + 5 < tcs.ClockTime())
+                    {
+                        var control = lvi as ControlLVIL1F1;
+                        if (Botones.AumVel.TimePressed >= 0.5f) control.SpeedUp();
+                        if (Botones.Ocultacion.TimePressed >= 0.5f) control.SpeedDown();
+                    }
+                }
+            }
+            if (ControlesPN.Count != 0)
+            {
+                if (tcs.SpeedMpS() < MpS.FromKpH(40))
+                {
+                    var l = ControlesPN.FindAll(x => x is ControlPNProtegido);
+                    foreach (ControlPNProtegido c in l)
+                    {
+                        Caducados.Add(c);
+                        TiempoUltimaRecepcion = tcs.ClockTime();
+                        DistanciaUltimaRecepcion = tcs.DistanceM();
+                        PNDesprotegido();
+                    }
+                }
+            }
+            foreach (Control c in Caducados)
+            {
+                Controles.Remove(c);
+                ControlesPN.Remove(c);
+                ControlesLVI.Remove(c as ControlLVI);
+            }
+            ControlActivo = null;
+            foreach (Control c in Controles)
+            {
+                if (c == null) continue;
+                bool Condition1 = ControlActivo == null || ControlActivo.getVC(tcs.ClockTime()) > c.getVC(tcs.ClockTime());
+                if (Condition1)
+                {
+                    ControlActivo = c;
+                    continue;
+                }
+                bool Condition2 = ControlActivo.getVC(tcs.ClockTime()) == c.getVC(tcs.ClockTime()) && ControlActivo.VC.OrdenadaFinal > c.VC.OrdenadaFinal;
+                if (Condition2)
+                {
+                    ControlActivo = c;
+                    continue;
+                }
+            }
+            if (ControlActivo is ControlAumentable && ControlActivo.TiempoInicial + 10 > tcs.ClockTime() && !(ControlActivo as ControlAumentable).Aumentado())
+            {
+                Botones.AumVel.Iluminado = true;
+                if (Botones.AumVel.TimePressed >= 0.5f)
+                {
+                    (ControlActivo as ControlAumentable).AumentarVelocidad();
+                    if (ControlActivo is ControlPreanuncioParada) Display.Info = AspectosASFA.AN_aum;
+                }
+            }
+            else if(ControlActivo is ControlLVI && ControlActivo.TiempoInicial + 10 > tcs.ClockTime())
+            {
+                Botones.AumVel.Iluminado = true;
+                if (Botones.AumVel.TimePressed >= 0.5f) (ControlActivo as ControlLVI).AumentarVelocidad();
+            }
+            else Botones.AumVel.Iluminado = false;
+        }
+        void desactivarControlTransitorio()
+        {
+            if (ControlTransitorio != null)
+            {
+                Controles.Remove(ControlTransitorio);
+                ControlTransitorio = null;
+            }
+        }
+        void Urgencias()
+        {
+            TriggerSound("S3-3");
+            FE = true;
+        }
+        void notRec(FrecASFA frec)
+        {
+            desactivarControlTransitorio();
+            if (frec == FrecASFA.L3) ViaLibre();
+            else
+            {
+                FE = true;
+                if (frec == FrecASFA.L1) AnuncioParada();
+                //Velo();
+            }
+            RecStart = 0;
+        }
+        float RecStart;
+        float RecEnd;
+        void StartRec(float time)
+        {
+            RecEnd = RecStart = time;
+            RecEnd += 3;
+        }
+        bool InfoSeñalDistinta;
+        void addControlSeñal(Control c)
+        {
+            if (SigNo == 0)
+            {
+                AnteriorControlSeñal = ControlSeñal;
+                List<Control> Caducados = new List<Control>();
+                foreach (Control control in Controles)
+                {
+                    if ((Modo != ModoASFA.RAM || InfoSeñalDistinta) && control is ControlFASF)
+                    {
+                        if (control is ControlSeñalParada)
+                        {
+                            if (control.TiempoVAlcanzada == 0) control.TiempoVAlcanzada = TiempoUltimaRecepcion;
+                        }
+                        else Caducados.Add(control);
+                    }
+                }
+                foreach (Control control in Caducados)
+                {
+                    Controles.Remove(control);
+                }
+            }
+            else Controles.RemoveAll(x => x is ControlFASF);
+            ControlSeñal = c;
+            Controles.Add(c);
+            if (AnteriorControlSeñal is ControlAnuncioPrecaución)
+            {
+                Controles.Add(new ControlPasoDesvío(tcs.ClockTime(), (AnteriorControlSeñal as ControlAnuncioPrecaución).AumentoVelocidad, Modo));
+            }
+            if(AnteriorControlSeñal is ControlAnuncioParada && ControlSeñal is ControlAnuncioParada)
+            {
+                Controles.Add(new ControlSecuenciaAA(tcs.ClockTime(), Modo));
+            }
+            if(AnteriorControlSeñal is ControlPreanuncioParada && ControlSeñal is ControlAnuncioParada)
+            {
+                Controles.Add(new ControlSecuenciaAN_A(tcs.ClockTime(), O, (AnteriorControlSeñal as ControlPreanuncioParada).AumentoVelocidad, SigNo == 0, Modo));
+            }
+        }
+        void ViaLibre()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlViaLibre)) InfoSeñalDistinta = true;
+            Control c = new ControlViaLibre(T);
+            Display.Info = AspectosASFA.VL;
+            addControlSeñal(c);
+        }
+        void ViaLibreCondicional()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlViaLibreCondicional)) InfoSeñalDistinta = true;
+            Control c;
+            if (DIV[18] > 160)
+            {
+                bool Fixed = false;
+                if (ControlSeñal.getVC(tcs.ClockTime()) <= 160) Fixed = true;
+                if(SigNo != 0 && !Fixed)
+                {
+                    if (ControlSeñal is ControlViaLibreCondicional) c = ControlSeñal;
+                    else c = new ControlViaLibreCondicional(ControlSeñal.TiempoInicial, T, O, false);
+                }
+                else c = new ControlViaLibreCondicional(tcs.ClockTime(), T, O, Fixed);
+            }
+            else
+            {
+                c = new ControlViaLibreCondicional(0, T, O, true);
+            }
+            Display.Info = AspectosASFA.VL_cond;
+            addControlSeñal(c);
+        }
+        void AnuncioParada()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlAnuncioParada)) InfoSeñalDistinta = true;
+            Control c;
+            if (SigNo != 0 && ControlSeñal != null)
+            {
+                if (ControlSeñal is ControlAnuncioParada) c = ControlSeñal;
+                else c = new ControlAnuncioParada(ControlSeñal.TiempoInicial, O, Modo);
+            }
+            else c = new ControlAnuncioParada(TiempoUltimaRecepcion, O, Modo);
+            Display.Info = AspectosASFA.A;
+            addControlSeñal(c);
+        }
+        void AnuncioPrecaucion()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlAnuncioPrecaución)) InfoSeñalDistinta = true;
+            Control c;
+            if (SigNo != 0 && ControlSeñal != null)
+            {
+                if (ControlSeñal is ControlAnuncioPrecaución) c = ControlSeñal;
+                else c = new ControlAnuncioPrecaución(ControlSeñal.TiempoInicial, ControlSeñal.DistanciaInicial, O, Modo);
+            }
+            else c = new ControlAnuncioPrecaución(TiempoUltimaRecepcion, DistanciaUltimaRecepcion, O, Modo);
+            Display.Info = AspectosASFA.AV;
+            addControlSeñal(c);
+        }
+        void PreanuncioParada()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlPreanuncioParada)) InfoSeñalDistinta = true;
+            Control c;
+            if (SigNo != 0 && ControlSeñal != null)
+            {
+                if (ControlSeñal is ControlPreanuncioParada) c = ControlSeñal;
+                else c = new ControlPreanuncioParada(ControlSeñal.TiempoInicial, O, Modo);
+            }
+            else c = new ControlPreanuncioParada(TiempoUltimaRecepcion, O, Modo);
+            Display.Info = AspectosASFA.AN;
+            addControlSeñal(c);
+        }
+        void PreviaParada()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlPreviaSeñalParada)) InfoSeñalDistinta = true;
+            if (SigNo == 1) ZonaLimiteParada();
+            else
+            {
+                Control c = new ControlPreviaSeñalParada(TiempoUltimaRecepcion, O, Modo);
+                addControlSeñal(c);
+            }
+            Display.Info = AspectosASFA.Rojo;
+        }
+        void ZonaLimiteParada()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlZonaLimiteParada)) InfoSeñalDistinta = true;
+            Control c = new ControlPreviaSeñalParada(0, O, Modo);
+            addControlSeñal(c);
+        }
+        void Parada()
+        {
+            EnlaceBalizas();
+            if (!(ControlSeñal is ControlSeñalParada)) InfoSeñalDistinta = true;
+            Control c = new ControlSeñalParada(T, Modo);
+            if(RebaseAuto) Display.Info = AspectosASFA.RojoRebase;
+            else
+            {
+                FE = true;
+                Display.Info = AspectosASFA.Rojo;
+            }
+            addControlSeñal(c);
+        }
+        void PNProtegido()
+        {
+            var c = new ControlPNProtegido(O, T, TiempoUltimaRecepcion, DistanciaUltimaRecepcion);
+            Controles.Add(c);
+            ControlesPN.Add(c);
+        }
+        void PNDesprotegido()
+        {
+            var c = new ControlPNDesprotegido(O, T, Modo, TiempoUltimaRecepcion, DistanciaUltimaRecepcion);
+            Controles.Add(c);
+            ControlesPN.Add(c);
+        }
+        int SigNo = 2;
+        float PrevDist = 0;
+        void EnlaceBalizas()
+        {
+            if (UltimaFrecValida == FrecASFA.L7)
+            {
+                if (SigNo == 0)
+                {
+                    if (tcs.DistanceM() - PrevDist < 80)
+                    {
+                        SigNo = 1;
+                    }
+                    else
+                    {
+                        FE = true;
+                        SigNo = 0;
+                    }
+                }
+                else
+                {
+                    SigNo = 0;
+                }
+            }
+            else if (UltimaFrecValida == FrecASFA.L8) SigNo = 2;
+            else if (SigNo == 2) SigNo = 0;
+            else if (tcs.DistanceM() - PrevDist < 450) SigNo = 2;
+            PrevDist = DistanciaUltimaRecepcion;
+        }
+        Aspect BalizaAspect;
+        Aspect BalizaNextAspect;
+        float LVIstart = 0;
+        FrecASFA lvi1 = FrecASFA.L11;
+        FrecASFA lvi2 = FrecASFA.L11;
+        public FrecASFA Baliza()
+        {
+            if (/*tcs.IsDirectionReverse()*/false)
+            {
+                if (tcs.SignalPassed) return FrecASFA.L8;
+                else if (tcs.PreviaPassed) return FrecASFA.L7;
+                else return FrecASFA.FP;
+            }
+            else
+            {
+                if (tcs.NextSignalDistanceM(tcs.PreviaSignalNumber) < tcs.PreviaDistance + 10 && tcs.NextSignalDistanceM(tcs.PreviaSignalNumber) > tcs.PreviaDistance)
+                {
+                    BalizaAspect = tcs.NextSignalAspect(tcs.PreviaSignalNumber);
+                    switch (BalizaAspect)
+                    {
+                        case Aspect.Stop:
+                        case Aspect.StopAndProceed:
+                        case Aspect.Restricted:
+                        case Aspect.Permission:
+                            return FrecASFA.L7;
+                        case Aspect.Approach_1:
+                        case Aspect.Approach_2:
+                        case Aspect.Approach_3:
+                            return FrecASFA.L1;
+                        case Aspect.Clear_1:
+                            return FrecASFA.L2;
+                        case Aspect.Clear_2:
+                            return FrecASFA.L3;
+                        default:
+                            return FrecASFA.FP;
+                    }
+                }
+                if (tcs.NextSignalDistanceM(0)<10 && tcs.NextSignalDistanceM(0)>5)
+                {
+                    BalizaAspect = tcs.NextSignalAspect(0);
+                    switch (BalizaAspect)
+                    {
+                        case Aspect.Stop:
+                        case Aspect.StopAndProceed:
+                        case Aspect.Restricted:
+                        case Aspect.Permission:
+                            return FrecASFA.L8;
+                        case Aspect.Approach_1:
+                        case Aspect.Approach_2:
+                        case Aspect.Approach_3:
+                            return FrecASFA.L1;
+                        case Aspect.Clear_1:
+                            return FrecASFA.L2;
+                        case Aspect.Clear_2:
+                            return FrecASFA.L3;
+                        default:
+                            return FrecASFA.FP;
+                    }
+                }
+                else
+                {
+                    BalizaNextAspect = tcs.NextSignalAspect(0);
+                }
+                if (tcs.AnuncioLTVPassed)
+                {
+                    LVIstart = tcs.DistanceM();
+                    float speed = MpS.ToKpH(tcs.NextPostSpeedLimitMpS(0));
+                    if(speed < 50) lvi1 = lvi2 = FrecASFA.L11;
+                    else if(speed < 80)
+                    {
+                        lvi1 = FrecASFA.L11;
+                        lvi2 = FrecASFA.L10;
+                    }
+                    else if(speed < 120)
+                    {
+                        lvi1 = FrecASFA.L10;
+                        lvi2 = FrecASFA.L11;
+                    }
+                    else lvi1 = lvi2 = FrecASFA.L10;
+                }
+                if(LVIstart != 0)
+                {
+                    if (tcs.DistanceM() - LVIstart < 3) return lvi1;
+                    if (tcs.DistanceM() - LVIstart < 6) return FrecASFA.FP;
+                    if (tcs.DistanceM() - LVIstart < 9) return lvi2;
+                    if (tcs.DistanceM() - LVIstart < 12) return FrecASFA.FP;
+                    if (tcs.DistanceM() - LVIstart < 15) return FrecASFA.L9;
+                    LVIstart = 0;
+                }
+            }
+            return FrecASFA.FP;
+        }
+
+        bool ASFA.Urgencia()
+        {
+            return FE;
+        }
+
+        bool ASFA.Connected()
+        {
+            return Connected;
+        }
+    }
+    class Boton
+    {
+        public bool Pulsado;
+        bool iluminado;
+        public bool Iluminado {
+            get { return iluminado; }
+            set
+            {
+                if(value != iluminado)
+                {
+                    iluminado = value;
+                    Display.send(0, (byte)(Repetidor.getList().IndexOf(this) << 2 | (iluminado ? 1 : 0)));
+                }
+            }
+        }
+        public float TimePressed
+        {
+            get {
+                float val = startTime != 0 ? Time() - startTime : 0;
+                if (val >= 0.5f) setState(false);
+                return val;
+            }
+            set
+            {
+                if (value == 0) setState(false);
+                else startTime = Time() - value;
+            }
+        }
+        float startTime;
+        Func<float> Time;
+        BotonesRepetidor Repetidor;
+        DisplayASFA Display;
+        public void setRepetidor(BotonesRepetidor r, DisplayASFA d)
+        {
+            Repetidor = r;
+            Display = d;
+        }
+        public void setTime(Func<float> t)
+        {
+            Time = t;
+        }
+        public void setState(bool State)
+        {
+            if(State && !Pulsado)
+            {
+                Pulsado = true;
+                startTime = Time();
+            }
+            if(!State)
+            {
+                Pulsado = false;
+                startTime = 0;
+            }
+        }
+    }
+    class BotonesRepetidor
+    {
+        public Boton AumVel = new Boton();
+        public Boton Modo = new Boton();
+        public Boton PN = new Boton();
+        public Boton Rebase = new Boton();
+        public Boton Rearme = new Boton();
+        public Boton Alarma = new Boton();
+        public Boton Ocultacion = new Boton();
+        public Boton LVI = new Boton();
+        public Boton Conex = new Boton();
+        public Boton ASFABasico = new Boton();
+        public Boton AnuncioParada = new Boton();
+        public Boton AnuncioPrecaución = new Boton();
+        public Boton Preanuncio = new Boton();
+        public Boton VL_Condicional = new Boton();
+        List<Boton> ListaBotones;
+        public List<Boton> getList()
+        {
+            if (ListaBotones != null) return ListaBotones;
+            List<Boton> l = new List<Boton>();
+            l.Add(AumVel);
+            l.Add(Modo);
+            l.Add(PN);
+            l.Add(Rebase);
+            l.Add(Rearme);
+            l.Add(Alarma);
+            l.Add(Ocultacion);
+            l.Add(LVI);
+            l.Add(Conex);
+            l.Add(ASFABasico);
+            l.Add(AnuncioParada);
+            l.Add(AnuncioPrecaución);
+            l.Add(Preanuncio);
+            l.Add(VL_Condicional);
+            ListaBotones = l;
+            return l;
+        }
+        public void apagar()
+        {
+            for(int i = 0; i<getList().Count; i++)
+            {
+                Boton b = ListaBotones[i];
+                b.Iluminado = false;
+            }
+        }
+    }
+    enum AspectosASFA
+    {
+        VL,
+        VL_cond,
+        A,
+        AV,
+        AN,
+        AN_aum,
+        Rojo,
+        RojoRebase,
+        Desconocido
+    }
+    class DisplayASFA
+    {
+        public void send(byte a, byte b)
+        {
+            byte[] data = new byte[3];
+            data[0] = a;
+            data[1] = b;
+            data[2] = 255;
+            tcs.serial.write(data);
+        }
+        int vactual = -1;
+        public int Vactual { set
+            {
+                if(value!=vactual)
+                {
+                    vactual = value;
+                    send(2, (byte)value);
+                }
+            }
+        }
+        int vobjetivo = -1;
+        public int Vobjetivo
+        {
+            set
+            {
+                tcs.SetCurrentSpeedLimitMpS(0);
+                tcs.SetNextSpeedLimitMpS(MpS.FromKpH(value));
+                if(value!=vobjetivo)
+                {
+                    vobjetivo = value;
+                    send(3, (byte)((vobjetivo/5)<<1));
+                }
+            }
+        }
+        int sobrevelocidad;
+        public int Sobrevelocidad
+        {
+            set
+            {
+                tcs.SetOverspeedWarningDisplay(value != 0);
+                if(value!=sobrevelocidad)
+                {
+                    sobrevelocidad = value;
+                    send(4, (byte)(value | 4));
+                }
+            }
+        }
+        bool urgencia;
+        public bool Urgencia
+        {
+            set
+            {
+                tcs.SetPenaltyApplicationDisplay(value);
+                if (value != urgencia)
+                {
+                    urgencia = value;
+                    send(4, (byte)(value ? 1 : 0));
+                }
+            }
+        }
+        AspectosASFA info = AspectosASFA.Desconocido;
+        public AspectosASFA Info
+        {
+            set
+            {
+                if (pasoDesv) tcs.SetNextSignalAspect(Aspect.Restricted);
+                else if (secAA) tcs.SetNextSignalAspect(Aspect.Approach_3);
+                else
+                {
+                    switch (value)
+                    {
+                        case AspectosASFA.Desconocido:
+                        case AspectosASFA.VL:
+                            tcs.SetNextSignalAspect(Aspect.Clear_2);
+                            break;
+                        case AspectosASFA.VL_cond:
+                            tcs.SetNextSignalAspect(Aspect.Clear_1);
+                            break;
+                        case AspectosASFA.A:
+                            tcs.SetNextSignalAspect(Aspect.Approach_1);
+                            break;
+                        case AspectosASFA.AV:
+                            tcs.SetNextSignalAspect(Aspect.Approach_2);
+                            break;
+                        case AspectosASFA.Rojo:
+                            tcs.SetNextSignalAspect(Aspect.Stop);
+                            break;
+                        case AspectosASFA.RojoRebase:
+                            tcs.SetNextSignalAspect(Aspect.StopAndProceed);
+                            break;
+                    }
+                }
+                if(info != value)
+                {
+                    info = value;
+                    send(1, (byte)info);
+                }
+            }
+        }
+        bool pnProt;
+        public bool PNProt
+        {
+            set
+            {
+                if(pnProt != value)
+                {
+                    pnProt = value;
+                    send(5, (byte)((value ? 1 : 0) | 10));
+                }
+            }
+        }
+        bool pnSin;
+        public bool PNsin
+        {
+            set
+            {
+                if (pnSin != value)
+                {
+                    pnSin = value;
+                    send(5, (byte)((value ? 1 : 0) | 8));
+                }
+            }
+        }
+        int lvi;
+        public int LVI
+        {
+            set
+            {
+                if (lvi != value)
+                {
+                    lvi = value;
+                    send(5, (byte)((value) | 4));
+                }
+            }
+        }
+        bool secAA;
+        public bool SecAA
+        {
+            set
+            {
+                if (pasoDesv) tcs.SetNextSignalAspect(Aspect.Restricted);
+                else if (value) tcs.SetNextSignalAspect(Aspect.Approach_3);
+                else
+                {
+                    switch (info)
+                    {
+                        case AspectosASFA.Desconocido:
+                        case AspectosASFA.VL:
+                            tcs.SetNextSignalAspect(Aspect.Clear_2);
+                            break;
+                        case AspectosASFA.VL_cond:
+                            tcs.SetNextSignalAspect(Aspect.Clear_1);
+                            break;
+                        case AspectosASFA.A:
+                            tcs.SetNextSignalAspect(Aspect.Approach_1);
+                            break;
+                        case AspectosASFA.AV:
+                            tcs.SetNextSignalAspect(Aspect.Approach_2);
+                            break;
+                        case AspectosASFA.Rojo:
+                            tcs.SetNextSignalAspect(Aspect.Stop);
+                            break;
+                        case AspectosASFA.RojoRebase:
+                            tcs.SetNextSignalAspect(Aspect.StopAndProceed);
+                            break;
+                    }
+                }
+                if (secAA != value)
+                {
+                    secAA = value;
+                    send(5, (byte)((value ? 1 : 0) | 2));
+                }
+            }
+        }
+        bool pasoDesv;
+        public bool PasoDesv
+        {
+            set
+            {
+                if (value) tcs.SetNextSignalAspect(Aspect.Restricted);
+                else if (secAA) tcs.SetNextSignalAspect(Aspect.Approach_3);
+                else
+                {
+                    switch (info)
+                    {
+                        case AspectosASFA.Desconocido:
+                        case AspectosASFA.VL:
+                            tcs.SetNextSignalAspect(Aspect.Clear_2);
+                            break;
+                        case AspectosASFA.VL_cond:
+                            tcs.SetNextSignalAspect(Aspect.Clear_1);
+                            break;
+                        case AspectosASFA.A:
+                            tcs.SetNextSignalAspect(Aspect.Approach_1);
+                            break;
+                        case AspectosASFA.AV:
+                            tcs.SetNextSignalAspect(Aspect.Approach_2);
+                            break;
+                        case AspectosASFA.Rojo:
+                            tcs.SetNextSignalAspect(Aspect.Stop);
+                            break;
+                        case AspectosASFA.RojoRebase:
+                            tcs.SetNextSignalAspect(Aspect.StopAndProceed);
+                            break;
+                    }
+                }
+                if (pasoDesv != value)
+                {
+                    pasoDesv = value;
+                    send(5, (byte)(value ? 1 : 0));
+                }
+            }
+        }
+        int estadoVobj;
+        public int EstadoVobj
+        {
+            set
+            {
+                if (value == 1)
+                {
+                    tcs.SetVigilanceAlarmDisplay(false);
+                    tcs.SetVigilanceEmergencyDisplay(false);
+                }
+                else if (value == 2)
+                {
+                    tcs.SetVigilanceAlarmDisplay(true);
+                    tcs.SetVigilanceEmergencyDisplay(false);
+                }
+                else if (value == 0)
+                {
+                    tcs.SetVigilanceAlarmDisplay(true);
+                    tcs.SetVigilanceEmergencyDisplay(true);
+                }
+                if (value != estadoVobj)
+                {
+                    estadoVobj = value;
+                    send(3, (byte)((value<<1) | 1));
+                }
+            }
+        }
+        public bool Fase2
+        {
+            set
+            {
+            }
+        }
+        bool eficacia;
+        public bool Eficacia
+        {
+            set
+            {
+                if (value != eficacia)
+                {
+                    eficacia = value;
+                    send(4, (byte)(value ? 3 : 2));
+                }
+            }
+        }
+        public int TipoTren
+        {
+            set
+            {
+            }
+        }
+        TCS_Spain tcs;
+        public DisplayASFA(TCS_Spain tcs)
+        {
+            this.tcs = tcs;
+        }
+    }
+    enum ModoASFA
+    {
+        CONV,
+        AV,
+        BasicoCONV,
+        BasicoAV,
+        RAM,
+        BTS,
+        MBRA,
+        EXT
+    }
+    class Control
+    {
+        public Curva IF = null;
+        public Curva VC = null;
+        public float TiempoInicial = 0;
+        public float DistanciaInicial = 0;
+        public float TiempoVigencia = 0;
+        public float DistanciaVigencia = 0;
+        public float TiempoVAlcanzada = 0;
+        public Control(float t0, float d0, float tv, float dv)
+        {
+            TiempoInicial = t0;
+            DistanciaInicial = d0;
+            TiempoVigencia = tv;
+            DistanciaVigencia = dv;
+        }
+        public float getIF(float T)
+        {
+            return TiempoInicial != 0 ? IF.valor(T - TiempoInicial) : IF.OrdenadaFinal;
+        }
+        public virtual float getVC(float T)
+        {
+            float v = TiempoInicial != 0 ? VC.valor(T - TiempoInicial) : VC.OrdenadaFinal;
+            if (v == VC.OrdenadaFinal && TiempoVAlcanzada == 0) TiempoVAlcanzada = T;
+            return v;
+        }
+    }
+    class ControlFASF : Control
+    {
+        public ControlFASF(float t0, float d0, float tv, float dv) : base(t0, d0, tv, dv) { }
+    }
+    interface ControlAumentable
+    {
+        void AumentarVelocidad();
+        bool Aumentado();
+    }
+    class ControlArranque : ControlFASF
+    {
+        public ControlArranque(float T) : base(0, 0, 0, 0)
+        {
+            VC = new Curva(Math.Min(T, 140), Math.Min(T, 140), 0, 0);
+            IF = new Curva(Math.Min(T + 5, 145), Math.Min(T + 5, 145), 0, 0);
+        }
+    }
+    class ControlTransicion : ControlFASF
+    {
+        public ControlTransicion(float T) : base(0, 0, 0, 0)
+        {
+            VC = new Curva(T, T, 0, 0);
+            IF = new Curva(T + 5, T + 5, 0, 0);
+        }
+    }
+    class ControlViaLibre : ControlFASF
+    {
+        public ControlViaLibre(float T) : base(0, 0, 0, 0)
+        {
+            VC = new Curva(T, T, 0, 0);
+            IF = new Curva(T + 5, T + 5, 0, 0);
+        }
+    }
+    class ControlViaLibreCondicional : ControlFASF
+    {
+        public ControlViaLibreCondicional(float time, float T, float O, bool Fixed) : base(time, 0, 0, 0)
+        {
+            if(Fixed||T<=160)
+            {
+                VC = new Curva(Math.Min(T, 160), Math.Min(T, 160), 0, 0);
+                IF = new Curva(Math.Min(T + 5, 163), Math.Min(T + 5, 163), 0, 0);
+            }
+            else if(O==180)
+            {
+                VC = new Curva(180, 160, 0.55f, 7.5f);
+                IF = new Curva(185, 163, 0.5f, 9);
+            }
+            else
+            {
+                VC = new Curva(200, 160, 0.55f, 7.5f);
+                IF = new Curva(205, 163, 0.5f, 9);
+            }
+        }
+    }
+    class ControlAnuncioParada : ControlFASF
+    {
+        public ControlAnuncioParada(float time, float O, ModoASFA Modo) : base(time, 0, 0, 0)
+        {
+            if(Modo == ModoASFA.CONV)
+            {
+                if (O <= 100)
+                {
+                    VC = new Curva(O, 60, 0.26f, 7.5f);
+                    IF = new Curva(O + 3, 63, 0.26f, 11);
+                }
+                else if (O == 120)
+                {
+                    VC = new Curva(120, 80, 0.46f, 7.5f);
+                    IF = new Curva(123, 83, 0.36f, 12);
+                }
+                else if (O == 140)
+                {
+                    VC = new Curva(140, 80, 0.6f, 7.5f);
+                    IF = new Curva(143, 83, 0.5f, 10);
+                }
+                else if(O >= 160)
+                {
+                    VC = new Curva(160, 80, 0.6f, 7.5f);
+                    IF = new Curva(163, 83, 0.5f, 9);
+                }
+            }
+            if (Modo == ModoASFA.AV)
+            {
+                if (O <= 100)
+                {
+                    VC = new Curva(O, O, 0, 0);
+                    IF = new Curva(O + 3, O + 3, 0, 0);
+                }
+                else if (O == 120)
+                {
+                    VC = new Curva(120, 100, 0.46f, 7.5f);
+                    IF = new Curva(123, 103, 0.36f, 12);
+                }
+                else if (O == 140)
+                {
+                    VC = new Curva(140, 100, 0.6f, 7.5f);
+                    IF = new Curva(143, 103, 0.5f, 10);
+                }
+                else if(O == 160)
+                {
+                    VC = new Curva(160, 100, 0.6f, 7.5f);
+                    IF = new Curva(163, 103, 0.5f, 9);
+                }
+                else if(O == 180)
+                {
+                    VC = new Curva(180, 100, 0.55f, 7.5f);
+                    IF = new Curva(185, 103, 0.5f, 9);
+                }
+                else if(O == 200)
+                {
+                    VC = new Curva(200, 100, 0.55f, 7.5f);
+                    IF = new Curva(205, 103, 0.5f, 9);
+                }
+            }
+        }
+    }
+    class ControlSecuenciaAA : Control
+    {
+        public ControlSecuenciaAA(float time, ModoASFA Modo) : base(time, 0, 20, 0)
+        {
+            if(Modo == ModoASFA.CONV || Modo == ModoASFA.BasicoCONV)
+            {
+                VC = new Curva(60, 60, 0, 0);
+                IF = new Curva(63, 63, 0, 0);
+            }
+            else if(Modo == ModoASFA.AV || Modo == ModoASFA.BasicoAV)
+            {
+                VC = new Curva(100, 100, 0, 0);
+                IF = new Curva(103, 103, 0, 0);
+            }
+        }
+    }
+    class ControlPreviaSeñalParada : ControlFASF
+    {
+        public ControlPreviaSeñalParada(float time, float O, ModoASFA Modo) : base(time, 0, 0, 0)
+        {
+            if(Modo == ModoASFA.AV || Modo == ModoASFA.BasicoAV || Modo == ModoASFA.CONV || Modo == ModoASFA.BasicoCONV)
+            {
+                if(O>100)
+                {
+                    VC = new Curva(50, 15, 0.6f, 1.5f);
+                    IF = new Curva(53, 18, 0.55f, 3.5f);
+                }
+                else if(O<=100)
+                {
+                    VC = new Curva(40, 15, 0.36f, 2.5f);
+                    IF = new Curva(43, 18, 0.36f, 5.5f);
+                }
+            }
+            else if(Modo == ModoASFA.RAM)
+            {
+
+            }
+        }
+    }
+    class ControlZonaLimiteParada : ControlFASF
+    {
+        public ControlZonaLimiteParada(ModoASFA Modo) : base(0, 0, 0, 0)
+        {
+            if (Modo == ModoASFA.CONV || Modo == ModoASFA.BasicoCONV || Modo == ModoASFA.AV || Modo == ModoASFA.BasicoAV || Modo == ModoASFA.RAM)
+            {
+                VC = new Curva(15, 15, 0, 0);
+                IF = new Curva(18, 18, 0, 0);
+            }
+        }
+    }
+    class ControlSeñalParada : ControlFASF, ControlAumentable
+    {
+        bool AumentoVelocidad;
+        float T;
+        ModoASFA Modo;
+        public ControlSeñalParada(float T, ModoASFA Modo) : base(0, 0, 20, 0)
+        {
+            this.T = T;
+            this.Modo = Modo;
+            Curvas();
+        }
+        void Curvas()
+        {
+            if (Modo == ModoASFA.CONV || Modo == ModoASFA.BasicoCONV || Modo == ModoASFA.AV || Modo == ModoASFA.BasicoAV)
+            {
+                if (AumentoVelocidad)
+                {
+                    VC = new Curva(Math.Min(T, 100), Math.Min(T, 100), 0, 0);
+                    IF = new Curva(Math.Min(T + 3, 103), Math.Min(T + 3, 103), 0, 0);
+                }
+                else
+                {
+                    VC = new Curva(40, 40, 0, 0);
+                    IF = new Curva(43, 43, 0, 0);
+                }
+            }
+        }
+        public void AumentarVelocidad()
+        {
+            AumentoVelocidad = true;
+            Curvas();
+        }
+        public bool Aumentado() { return AumentoVelocidad; }
+        public override float getVC(float time)
+        {
+            return VC.valor(time - TiempoInicial);
+        }
+    }
+    class ControlPreanuncioParada : ControlFASF, ControlAumentable
+    {
+        public bool AumentoVelocidad;
+        float O;
+        ModoASFA Modo;
+        public ControlPreanuncioParada(float time, float O, ModoASFA Modo) : base(time, 0, 0, 0)
+        {
+            this.O = O;
+            this.Modo = Modo;
+            Curvas();
+        }
+        void Curvas()
+        {
+            if(Modo == ModoASFA.CONV)
+            {
+                if (O >= 160)
+                {
+                    IF = new Curva(163, 83, 0.5f, 9);
+                    VC = new Curva(160, 80, 0.6f, 7.5f);
+                }
+                else if (O == 140)
+                {
+                    IF = new Curva(143, 83, 0.5f, 10);
+                    VC = new Curva(140, 80, 0.6f, 7.5f);
+                }
+                else if (O == 120)
+                {
+                    IF = new Curva(123, 83, 0.36f, 12);
+                    VC = new Curva(120, 80, 0.46f, 7.5f);
+                }
+                else if (O <= 100)
+                {
+                    IF = new Curva(O + 3, 63, 0.26f, 11);
+                    VC = new Curva(O, 60, 0.36f, 7.5f);
+                }
+                if(AumentoVelocidad)
+                {
+                    IF.OrdenadaFinal += 20;
+                    VC.OrdenadaFinal += 20;
+                }
+            }
+        }
+        public void AumentarVelocidad()
+        {
+            AumentoVelocidad = true;
+            Curvas();
+        }
+        public bool Aumentado() { return AumentoVelocidad; }
+    }
+    class ControlSecuenciaAN_A : ControlFASF
+    {
+        public ControlSecuenciaAN_A(float time, float O, bool AnteriorAumVel, bool FirstBalise, ModoASFA Modo) : base(time, 0, 0, 0)
+        {
+            if(Modo == ModoASFA.CONV)
+            {
+                if(!AnteriorAumVel)
+                {
+                    float Vf = 60;
+                    if(FirstBalise)
+                    {
+                        if(O>=140)
+                        {
+                            IF = new Curva(83, 63, 0.5f, 5);
+                            VC = new Curva(80, 60, 0.6f, 3.5f);
+                        }
+                        else if (O == 120)
+                        {
+                            IF = new Curva(83, 63, 0.36f, 5);
+                            VC = new Curva(80, 60, 0.46f, 3.5f);
+                        }
+                        else if(O<=100)
+                        {
+                            IF = new Curva(63);
+                            VC = new Curva(60);
+                        }
+                    }
+                    else
+                    {
+                        IF = new Curva(Vf + 3);
+                        VC = new Curva(Vf);
+                    }
+                }
+                else
+                {
+                    if (FirstBalise)
+                    {
+                        if (O >= 140)
+                        {
+                            IF = new Curva(103, 93, 0.5f, 5);
+                            VC = new Curva(100, 90, 0.6f, 3.5f);
+                        }
+                        else if (O == 120)
+                        {
+                            IF = new Curva(103, 93, 0.36f, 5);
+                            VC = new Curva(100, 90, 0.46f, 3.5f);
+                        }
+                        else if (O <= 100)
+                        {
+                            IF = new Curva(83, 63, 0.26f, 5);
+                            VC = new Curva(80, 60, 0.36f, 2.5f);
+                        }
+                    }
+                    else
+                    {
+                        if (O >= 160)
+                        {
+                            IF = new Curva(93, 83, 0.5f, 9);
+                            VC = new Curva(90, 80, 0.6f, 7.5f);
+                        }
+                        else if (O == 140)
+                        {
+                            IF = new Curva(93, 83, 0.5f, 10);
+                            VC = new Curva(90, 80, 0.6f, 7.5f);
+                        }
+                        else if (O == 120)
+                        {
+                            IF = new Curva(93, 83, 0.36f, 12);
+                            VC = new Curva(90, 80, 0.46f, 7.5f);
+                        }
+                        else if (O <= 100)
+                        {
+                            IF = new Curva(63);
+                            VC = new Curva(60);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    class ControlAnuncioPrecaución : ControlFASF, ControlAumentable
+    {
+        public bool AumentoVelocidad;
+        ModoASFA Modo;
+        float O;
+        public ControlAnuncioPrecaución(float time, float dist, float O, ModoASFA Modo) : base(time, dist, 0, Modo == ModoASFA.RAM ? 200 : 0)
+        {
+            this.Modo = Modo;
+            this.O = O;
+            Curvas();
+        }
+        void Curvas()
+        {
+            if (Modo == ModoASFA.CONV)
+            {
+                if (AumentoVelocidad)
+                {
+                    if (O >= 160)
+                    {
+                        IF = new Curva(163, 103, 0.5f, 9);
+                        VC = new Curva(160, 100, 0.6f, 7.5f);
+                    }
+                    else if (O == 140)
+                    {
+                        IF = new Curva(143, 103, 0.5f, 10);
+                        VC = new Curva(140, 100, 0.6f, 7.5f);
+                    }
+                    else if (O == 120)
+                    {
+                        IF = new Curva(123, 103, 0.36f, 12);
+                        VC = new Curva(120, 100, 0.46f, 7.5f);
+                    }
+                    else if (O <= 100)
+                    {
+                        IF = new Curva(O + 3, O + 3, 0, 0);
+                        VC = new Curva(O, O, 0, 0);
+                    }
+                }
+                else
+                {
+                    if (O >= 160)
+                    {
+                        IF = new Curva(163, 83, 0.5f, 9);
+                        VC = new Curva(160, 80, 0.6f, 7.5f);
+                    }
+                    else if (O == 140)
+                    {
+                        IF = new Curva(143, 83, 0.5f, 10);
+                        VC = new Curva(140, 80, 0.6f, 7.5f);
+                    }
+                    else if (O == 120)
+                    {
+                        IF = new Curva(123, 83, 0.36f, 12);
+                        VC = new Curva(120, 80, 0.46f, 7.5f);
+                    }
+                    else if (O <= 100)
+                    {
+                        IF = new Curva(O + 3, 63, 0.26f, 11);
+                        VC = new Curva(O, 60, 0.36f, 7.5f);
+                    }
+                }
+            }
+        }
+        public void AumentarVelocidad()
+        {
+            AumentoVelocidad = true;
+            Curvas();
+        }
+        public bool Aumentado() { return AumentoVelocidad; }
+    }
+    class ControlPasoDesvío : Control
+    {
+        public ControlPasoDesvío(float time, bool AnteriorAumVel, ModoASFA Modo) : base(time, 0, 20, 0)
+        {
+            if(AnteriorAumVel)
+            {
+                if (Modo == ModoASFA.CONV || Modo == ModoASFA.BasicoCONV)
+                {
+                    IF = new Curva(93, 93, 0, 0);
+                    VC = new Curva(90, 90, 0, 0);
+                }
+            }
+            else
+            {
+                if (Modo == ModoASFA.CONV || Modo == ModoASFA.BasicoCONV)
+                {
+                    IF = new Curva(63, 63, 0, 0);
+                    VC = new Curva(60, 60, 0, 0);
+                }
+            }
+        }
+    }
+    class ControlLVI : Control
+    {
+        public bool Reached = false;
+        public bool isReached(float time, float speed)
+        {
+            if (Reached) return true;
+            if (speed <= VC.OrdenadaFinal)
+            {
+                Reached = true;
+                VC = new Curva(VC.OrdenadaFinal);
+                IF = new Curva(IF.OrdenadaFinal);
+            }
+            return Reached;
+        }
+        public bool Aumentable;
+        public ControlLVI(float O, float Vf, bool aumentable, float time) : base(time, 0, 0, 0)
+        {
+            Aumentable = aumentable;
+            if(O>160)
+            {
+                IF = new Curva(O + 5, Vf + 3, 0.5f, 9);
+                VC = new Curva(O, Vf, 0.6f, 7.5f);
+            }
+            else if(O==160)
+            {
+                IF = new Curva(163, Vf + 3, 0.5f, 9);
+                VC = new Curva(160, Vf, 0.6f, 7.5f);
+            }
+            else if (O == 140)
+            {
+                IF = new Curva(143, Vf + 3, 0.5f, 10);
+                VC = new Curva(140, Vf, 0.6f, 7.5f);
+            }
+            else if (O == 120)
+            {
+                IF = new Curva(123, Vf + 3, 0.36f, 12);
+                VC = new Curva(120, Vf, 0.46f, 7.5f);
+            }
+            else if (O <= 100)
+            {
+                IF = new Curva(O + 3, Vf + 3, 0.26f, 11);
+                VC = new Curva(O, Vf, 0.36f, 7.5f);
+            }
+            if(Vf>VC.valor(0))
+            {
+                IF.OrdenadaFinal = IF.valor(0);
+                VC.OrdenadaFinal = VC.valor(0);
+            }
+        }
+        public virtual void AumentarVelocidad()
+        {
+            if(Aumentable)
+            {
+                IF.OrdenadaFinal = Math.Min(IF.OrdenadaFinal+20, IF.valor(0));
+                VC.OrdenadaFinal = Math.Min(VC.OrdenadaFinal + 20, VC.valor(0));
+                Aumentable = false;
+            }
+        }
+        protected ControlLVI(float time) : base(time, 0, 0, 0) { }
+    }
+    class ControlLVIL1F1 : ControlLVI, ControlAumentable
+    {
+        bool AumentoVelocidad = false;
+        float O;
+        ModoASFA Modo;
+        public ControlLVIL1F1(float time, float O, ModoASFA Modo) : base(time)
+        {
+            this.O = O;
+            this.Modo = Modo;
+            Curvas();
+        }
+        void Curvas()
+        {
+            if (Modo == ModoASFA.CONV)
+            {
+                if (AumentoVelocidad)
+                {
+                    if (O >= 160)
+                    {
+                        IF = new Curva(163, 103, 0.5f, 9);
+                        VC = new Curva(160, 100, 0.6f, 7.5f);
+                    }
+                    else if (O == 140)
+                    {
+                        IF = new Curva(143, 103, 0.5f, 10);
+                        VC = new Curva(140, 100, 0.6f, 7.5f);
+                    }
+                    else if (O == 120)
+                    {
+                        IF = new Curva(123, 103, 0.36f, 12);
+                        VC = new Curva(120, 100, 0.46f, 7.5f);
+                    }
+                    else if (O <= 100)
+                    {
+                        IF = new Curva(O + 3, O + 3, 0, 0);
+                        VC = new Curva(O, O, 0, 0);
+                    }
+                }
+                else
+                {
+                    if (O >= 160)
+                    {
+                        IF = new Curva(163, 63, 0.5f, 9);
+                        VC = new Curva(160, 60, 0.6f, 7.5f);
+                    }
+                    else if (O == 140)
+                    {
+                        IF = new Curva(143, 63, 0.5f, 10);
+                        VC = new Curva(140, 60, 0.6f, 7.5f);
+                    }
+                    else if (O == 120)
+                    {
+                        IF = new Curva(123, 63, 0.36f, 12);
+                        VC = new Curva(120, 60, 0.46f, 7.5f);
+                    }
+                    else if (O <= 100)
+                    {
+                        IF = new Curva(O + 3, 63, 0.26f, 11);
+                        VC = new Curva(O, 60, 0.36f, 7.5f);
+                    }
+                }
+            }
+        }
+        public void SpeedUp()
+        {
+            if (!Reached) return;
+            VC = new Curva(VC.OrdenadaFinal + 20);
+            IF = new Curva(IF.OrdenadaFinal + 20);
+        }
+        public void SpeedDown()
+        {
+            if (!Reached) return;
+            VC = new Curva(VC.OrdenadaFinal - 20);
+            IF = new Curva(IF.OrdenadaFinal - 20);
+        }
+        public override void AumentarVelocidad()
+        {
+            AumentoVelocidad = true;
+            Curvas();
+        }
+        public bool Aumentado() { return AumentoVelocidad; }
+    }
+    class ControlPNProtegido : Control
+    {
+        public ControlPNProtegido(float O, float T, float time, float dist) : base(time, dist, 0, 1800)
+        {
+            if(O==200)
+            {
+                IF = new Curva(205, 158, 0.5f, 9);
+                VC = new Curva(200, 155, 0.55f, 6);
+            }
+            else if (O == 180)
+            {
+                IF = new Curva(185, 158, 0.5f, 9);
+                VC = new Curva(180, 155, 0.55f, 7.5f);
+            }
+            else if (O == 160)
+            {
+                IF = new Curva(165, 158, 0.5f, 9);
+                VC = new Curva(160, 155, 0.55f, 7.5f);
+            }
+            else
+            {
+                IF = new Curva(T + 5, T + 5, 0, 0);
+                VC = new Curva(T, T, 0, 0);
+            }
+        }
+    }
+    class ControlPNDesprotegido : Control
+    {
+        public ControlPNDesprotegido(float O, float T, ModoASFA Modo, float time, float dist) : base(time, dist, 0, 1800)
+        {
+            if(Modo==ModoASFA.CONV || Modo == ModoASFA.AV || Modo == ModoASFA.BTS)
+            {
+                if(O>=160)
+                {
+                    IF = new Curva(163, 33, 0.5f, 9);
+                    VC = new Curva(160, 30, 0.6f, 7.5f);
+                }
+                else if (O == 140)
+                {
+                    IF = new Curva(143, 33, 0.5f, 10);
+                    VC = new Curva(140, 30, 0.6f, 7.5f);
+                }
+                else if (O == 120)
+                {
+                    IF = new Curva(123, 33, 0.36f, 12);
+                    VC = new Curva(120, 30, 0.46f, 7.5f);
+                }
+                else if (O <= 100)
+                {
+                    IF = new Curva(O + 3, 33, 0.26f, 11);
+                    VC = new Curva(O, 30, 0.36f, 7.5f);
+                }
+            }
+        }
+        public override float getVC(float time)
+        {
+            float val = base.getVC(time);
+            if(val == 30)
+            {
+                IF = new Curva(83, 83, 0, 0);
+                VC = new Curva(80, 80, 0, 0);
+                val = 80;
+            }
+            return val;
+        }
+    }
+    class Curva
+    {
+        float OrdenadaOrigen;
+        public float OrdenadaFinal;
+        float Deceleracion;
+        float TiempoReaccion;
+        public Curva(float O0, float Of, float Dec, float TReac)
+        {
+            OrdenadaOrigen = O0;
+            OrdenadaFinal = Of;
+            Deceleracion = Dec;
+            TiempoReaccion = TReac;
+        }
+        public Curva(float vconst)
+        {
+            OrdenadaOrigen = vconst;
+            OrdenadaFinal = vconst;
+            Deceleracion = 0;
+            TiempoReaccion = 0;
+        }
+        public float valor(float time)
+        {
+            return Math.Max(OrdenadaFinal, Math.Min(OrdenadaOrigen, MpS.ToKpH(MpS.FromKpH(OrdenadaOrigen)-Deceleracion*(time-TiempoReaccion))));
+        }
+    }
+    public class Serial
+    {
+        public string Port = "COM6";
+        SerialPort sp;
+        float PreviousTime = 0;
+        float LastConex = 0;
+        TCS_Spain tcs;
+        public Serial(int BaudRate, TCS_Spain tcs)
+        {
+            this.tcs = tcs;
+            string[] ports = null;
+            if (Port == null)
+            {
+                ports = SerialPort.GetPortNames();
+                foreach (string port in ports)
+                {
+                    try
+                    {
+                        using (SerialPort sp = new SerialPort(port))
+                        {
+                            sp.Open();
+                            string incoming = sp.ReadExisting();
+                            if (incoming.Contains("ASFA")) Port = port;
+                            else sp.Close();
+                        }
+                        if (Port != null)
+                        {
+                            sp = new SerialPort(Port, BaudRate);
+                            sp.WriteBufferSize = 128;
+                            sp.ReadBufferSize = 128;
+                            LastConex = tcs.ClockTime();
+                            break;
+                        }
+                    }
+                    catch (Exception) { }
+                }
+            }
+            else
+            {
+                try
+                {
+                    sp = new SerialPort(Port, BaudRate);
+                    sp.WriteBufferSize = 128;
+                    sp.ReadBufferSize = 128;
+                    LastConex = tcs.ClockTime();
+                }
+                catch (Exception) { }
+            }
+        }
+        public void write(byte[] data)
+        {
+            try
+            {
+                if (!sp.IsOpen) sp.Open();
+                sp.WriteTimeout = 10;
+                sp.Write(data, 0, data.Length);
+            }
+            catch (Exception) { }
+        }
+        public void poll()
+        {
+            if (Port != null)
+            {
+                try
+                {
+                    if (!sp.IsOpen) sp.Open();
+                    sp.WriteTimeout = 10;
+                    if (tcs.ASFA is ASFADigital)
+                    {
+                        var asfa = tcs.ASFA as ASFADigital;
+                        if (sp.BytesToRead >= 2)
+                        {
+                            byte[] incoming = new byte[2];
+                            sp.Read(incoming, 0, 2);
+                            if (incoming[1] == 255)
+                            {
+                                asfa.Botones.getList()[incoming[0] >> 1].setState((incoming[0] & 1) == 1);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var asfa = tcs.ASFA as ASFAclasico;
+                        while (sp.BytesToRead > 7 && sp.ReadChar() != '\n') ;
+                        byte[] data = new byte[1];
+                        if (sp.BytesToRead > 0)
+                        {
+                            sp.Read(data, 0, 1);
+                            LastConex = tcs.ClockTime();
+                        }
+                        if (data[0] == 48) asfa.Urgencia = false;
+                        if (data[0] == 49) asfa.Urgencia = true;
+                        char freq = '/';
+                        switch (asfa.Baliza())
+                        {
+                            case ASFAclasico.Freq.FP: freq = '0'; break;
+                            case ASFAclasico.Freq.L1: freq = '1'; break;
+                            case ASFAclasico.Freq.L2: freq = '2'; break;
+                            case ASFAclasico.Freq.L3: freq = '3'; break;
+                            case ASFAclasico.Freq.L4: freq = '4'; break;
+                            case ASFAclasico.Freq.L5: freq = '5'; break;
+                            case ASFAclasico.Freq.L6: freq = '6'; break;
+                            case ASFAclasico.Freq.L7: freq = '7'; break;
+                            case ASFAclasico.Freq.L8: freq = '8'; break;
+                            case ASFAclasico.Freq.L9: freq = '9'; break;
+                        }
+                        byte speed = Convert.ToByte(Math.Abs(MpS.ToKpH(tcs.SpeedMpS())));
+                        if (PreviousTime + 0.5f < tcs.ClockTime() || freq != '0')
+                        {
+                            sp.Write(new char[1] { freq }, 0, 1);
+                            sp.Write(new byte[1] { speed }, 0, 1);
+                            sp.Write("ASFA" + '\r' + '\n');
+                            PreviousTime = tcs.ClockTime();
+                        }
+                    }
+                }
+                catch (Exception)
+                {
+                }
             }
         }
     }
