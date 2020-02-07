@@ -3,8 +3,55 @@ using System.Collections.Generic;
 using System.IO.Ports;
 using ORTS.Common;
 using ORTS.Scripting.Api;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Linq;
+using System.Threading.Tasks;
 namespace ORTS.Scripting.Script
 {
+    public abstract class Client
+    {
+        public abstract void start();
+        public abstract void WriteLine(string s);
+        public abstract string ReadLine();
+    }
+    public class TCPClient : Client
+    {
+        TcpClient client;
+        NetworkStream stream;
+        string buff;
+        public TCPClient(TcpClient c)
+        {
+            client = c;
+            stream = client.GetStream();
+            buff = "";
+        }
+        public override void start()
+        {
+        }
+        public override void WriteLine(string s)
+        {
+            byte[] b = System.Text.Encoding.UTF8.GetBytes(s + '\n');
+            stream.Write(b, 0, b.Length);
+        }
+        public override string ReadLine()
+        {
+            while(stream.DataAvailable)
+            {
+                buff+=(char)stream.ReadByte();
+            }
+            int ind = buff.IndexOf('\n');
+            if(ind >= 0)
+            {
+                string res = buff.Substring(0, ind);
+                buff = buff.Substring(ind+1);
+                return res;
+            }
+            return null;
+        }
+    }
     public struct Battery
     {
         public float ChargeAh;
@@ -103,10 +150,13 @@ namespace ORTS.Scripting.Script
     }
     public class Toma_corriente_447 : ElectricPowerSupply
     {
+        TCPClient client = null;
+        TcpClient c;
+        Task clientConnect = null;
         IIRFilter VoltageFilter;
         float RealLineVoltageV;
         Timer Rele_minima;
-        bool Contactor_bateria = false;
+        bool Contactor_bateria = true;
         Battery Battery;
         Convertidor_3000Vcc_380Vca3 Convertidor_Estático;
         Cargador_Bateria Cargador_Batería;
@@ -128,17 +178,23 @@ namespace ORTS.Scripting.Script
         PantographState PreviousState;
         public override void Update(float elapsedClockSeconds)
         {
+            if(clientConnect==null)
+            {
+                c = new TcpClient();
+                clientConnect = c.ConnectAsync("127.0.0.1", 5090);
+            }
+            if(client==null && clientConnect.IsCompleted) client = new TCPClient(c);
             Convertidor_Estático.Update(ClockTime());
             elapsedTime += elapsedClockSeconds;
             if (elapsedTime>0.5)
             {
                 SpeedMpS = (DistanceM() - PreviousDistance) / elapsedTime;
-                Acceleration = Math.Max(Math.Min((SpeedMpS - PreviousSpeed) / elapsedTime, 0.7f), -0.7f);
+                Acceleration = (SpeedMpS - PreviousSpeed) / elapsedTime;
                 PreviousSpeed = SpeedMpS;
                 PreviousDistance = DistanceM();
                 elapsedTime = 0;
             }
-            RealLineVoltageV = LineVoltageV() - Acceleration / 0.7f * 90f;
+            RealLineVoltageV = LineVoltageV();
             if (CurrentPantographState() == PantographState.Down)
             {
                 if(!Rele_minima.Triggered) Contactor_bateria = true;
@@ -162,6 +218,11 @@ namespace ORTS.Scripting.Script
             if (Convertidor_Estático.State == PowerSupplyState.PowerOn && Contactor_bateria) Cargador_Batería.Charge(ref Battery, ClockTime());
             SetFilterVoltageV(CurrentCircuitBreakerState() == CircuitBreakerState.Closed ? RealLineVoltageV : Battery.VoltageV);
             SetPantographVoltageV(FilterVoltageV());
+            if(client!=null)
+            {
+                client.WriteLine("power=" + ((CurrentState()==PowerSupplyState.PowerOn) ? "1" : "0"));
+                client.WriteLine("line_voltage=" + RealLineVoltageV.ToString().Replace(',','.'));
+            }
         }
     }
 }

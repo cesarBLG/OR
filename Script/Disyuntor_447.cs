@@ -20,7 +20,7 @@ namespace ORTS.Scripting.Script
         public override void Update(float elapsedSeconds)
         {
             if (!TCSClosingAuthorization() || CurrentPantographState()!=PantographState.Up) SetCurrentState(CircuitBreakerState.Open);
-            if (PantoPrevState != PantographState.Up && CurrentPantographState() == PantographState.Up) SetCurrentState(CircuitBreakerState.Closing);
+            //if (PantoPrevState != PantographState.Up && CurrentPantographState() == PantographState.Up) SetCurrentState(CircuitBreakerState.Closing);
             if (DriverOpeningOrder())
             {
                 SetCurrentState(CircuitBreakerState.Open);
