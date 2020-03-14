@@ -16,7 +16,7 @@ namespace ORTS.Scripting.Script
 {
     public class ServerTCS : TrainControlSystem
     {
-        Client c=null;
+        public Client c=null;
         HashSet<Parameter> parameters = new HashSet<Parameter>();
         List<InteractiveTCS> tcs = new List<InteractiveTCS>();
         Parameter GetParameter(string parameter)
@@ -200,9 +200,30 @@ namespace ORTS.Scripting.Script
                 c.WriteLine("register(wipers)");
                 c.WriteLine("register(sander)");
                 c.WriteLine("register(headlight)");
-                //c.WriteLine("register(train_brake)");
                 c.WriteLine("register(hm_pressed)");
+                c.WriteLine("request_module(asfa_digital)");
                 c.WriteLine("register(asfa_emergency)");
+                c.WriteLine("register(asfa_target_speed)");
+                c.WriteLine("register(asfa_target_state)");
+                c.WriteLine("register(asfa_last_info)");
+                c.WriteLine("register(asfa_secuencia_aa)");
+                c.WriteLine("register(asfa_control_desvio)");
+                c.WriteLine("register(asfa_indicador_lvi)");
+                c.WriteLine("register(asfa_indicador_pndesp)");
+                c.WriteLine("register(asfa_indicador_pnprot)");
+                c.WriteLine("register(asfa_indicador_frenado)");
+                c.WriteLine("register(asfa_ilumpuls_anpar)");
+                c.WriteLine("register(asfa_ilumpuls_anpre)");
+                c.WriteLine("register(asfa_ilumpuls_prepar)");
+                c.WriteLine("register(asfa_ilumpuls_vlcond)");
+                c.WriteLine("register(asfa_ilumpuls_modo)");
+                c.WriteLine("register(asfa_ilumpuls_rearme)");
+                c.WriteLine("register(asfa_ilumpuls_rebase)");
+                c.WriteLine("register(asfa_ilumpuls_aumento)");
+                c.WriteLine("register(asfa_ilumpuls_alarma)");
+                c.WriteLine("register(asfa_ilumpuls_ocultacion)");
+                c.WriteLine("register(asfa_ilumpuls_lvi)");
+                c.WriteLine("register(asfa_ilumpuls_pn)");
                 c.WriteLine("register(etcs_emergency)");
                 c.WriteLine("register(etcs_fullbrake)");
             }
@@ -248,87 +269,6 @@ namespace ORTS.Scripting.Script
             {
                 p.Send();
             }
-            UpdateSignalPassed();
-            UpdateInfillPassed();
-            if(SignalPassed)
-            {
-                string ma="00001100"+"01";
-                float maend=0;
-                if(PreviousSignalAspect==Aspect.Stop)
-                {
-                    ma += "0000001011111"+"01";
-                    ma += "0000000"+"0000000"+"0000000000"+"00000";
-                    ma += "000000000000000"+"0"+"0"+"1"+"000000011001000"+"1111111"+"0";
-                }
-                else if(PreviousSignalAspect==Aspect.Clear_1 || PreviousSignalAspect==Aspect.Clear_2 || PreviousSignalAspect==Aspect.Approach_2)
-                {
-                    ma += "0000001011111"+"01";
-                    ma += "0101000"+"0000000"+"0000000000"+"00000";
-                    ma += format_etcs_distance(NextSignalDistanceM(1))+"0"+"0"+"1"+"000000011001000"+"1111111"+"0";
-                }
-                else
-                {
-                    ma += "0000001011111"+"01";
-                    ma += "0101000"+"0000000"+"0000000000"+"00000";
-                    ma += format_etcs_distance(NextSignalDistanceM(0))+"0"+"0"+"1"+"000000011001000"+"1111111"+"0";
-                }
-                string ssp="00011011"+"01"+"0000000000000"+"01";
-                ssp += "000000000000000"+format_etcs_speed(CurrentPostSpeedLimitMpS())+"0"+"00000";
-                ssp += "00000";
-                int niter=0;
-                float sspend = NextSignalDistanceM(1)+1000;
-                float dist=0;
-                for(int i=0; i<10; i++)
-                {
-                    float prevdist = dist;
-                    dist = NextPostDistanceM(i);
-                    if (dist > sspend || dist==prevdist)
-                        break;
-                    ssp+=format_etcs_distance(dist-prevdist)+format_etcs_speed(NextPostSpeedLimitMpS(i))+"0"+"00000";
-                    dist=NextPostDistanceM(i);
-                    niter=i+1;
-                }
-                niter++;
-                ssp += format_etcs_distance(sspend)+"1111111"+"0"+"00000";
-                string sspsize = Convert.ToString(ssp.Length,2);
-                int i0 = 23-sspsize.Length;
-                char[] ssparr = ssp.ToCharArray();
-                for (int i=i0; i<23; i++)
-                {
-                    ssparr[i] = sspsize[i-i0];
-                }
-                string n_iter = Convert.ToString(niter,2);
-                i0 = 58-n_iter.Length;
-                for (int i=i0; i<58; i++)
-                {
-                    ssparr[i] = n_iter[i-i0];
-                }
-                ssp = new string(ssparr);
-                string grad="00010101"+"01"+"0000001001110"+"01";
-                grad += "000000000000000"+"0"+"00000000";
-                grad += "00001";
-                grad += "111111111111111"+"0"+"11111111";
-                string link="00000101"+"01"+"0000001000101"+"01"+format_etcs_distance(NextSignalDistanceM(0))+"0"+"00000000000001"+"1"+"00"+"001100"+"00000";
-                string tel1 = "1"+"0100001"+"0"+"000"+"010"+"00"+"11111111"+"0000000000"+"00000000000001"+"1";
-                tel1 += grad + ssp + "11111111";
-                string tel2 = "1"+"0100001"+"0"+"001"+"010"+"00"+"11111111"+"0000000000"+"00000000000001"+"1";
-                tel2 += ma + "11111111";
-                string tel3 = "1"+"0100001"+"0"+"010"+"010"+"00"+"11111111"+"0000000000"+"00000000000001"+"1";
-                tel3 += link + "11111111";
-                c.WriteLine("etcs_telegram="+tel1);
-                c.WriteLine("etcs_telegram="+tel2);
-                c.WriteLine("etcs_telegram="+tel3);
-            }
-            if(InfillPassed)
-            {
-                /*string val;
-                int num=1;
-                if(PreviousSignalAspect==Aspect.Clear_1 || PreviousSignalAspect==Aspect.Clear_2 || PreviousSignalAspect==Aspect.Approach_2) num=2;
-                float start = NextSignalDistanceM(0);
-                val = "etcs_ma_infill="+start.ToString().Replace(',','.');
-                val += ","+(NextSignalDistanceM(num)-start).ToString().Replace(',','.');
-                c.WriteLine(val);*/
-            }
             bool Emergency = false;
             bool FullBrake = false;
             foreach(InteractiveTCS i in tcs)
@@ -343,7 +283,6 @@ namespace ORTS.Scripting.Script
                 if (userThrottle==0) setThrottle(Math.Max(0,ATFval));
                 else setThrottle(Math.Max(0,Math.Min(ATFval,userThrottle)));
                 setDynamicBrake(Math.Max(-ATFval,0));
-                SetNextSpeedLimitMpS((ATFval+1)*50/3.6f);
             }
             else
             {
@@ -367,30 +306,6 @@ namespace ORTS.Scripting.Script
             SetEmergencyBrake(Emergency||IsDirectionNeutral());
             SetFullBrake(FullBrake);
             SetTractionAuthorization(!DoesBrakeCutPower() || BrakeCutsPowerAtBrakeCylinderPressureBar() > LocomotiveBrakeCylinderPressureBar());
-        }
-        string format_etcs_speed(float speedmps)
-        {
-            int val = (int)Math.Round(speedmps*3.6)/5;
-            string spd = Convert.ToString(val,2);
-            string speed="";
-            for (int i=0; i<7-spd.Length; i++)
-            {
-                speed += "0";
-            }
-            speed += spd;
-            return speed;
-        }
-        string format_etcs_distance(float distm)
-        {
-            int val = (int)distm;
-            string d = Convert.ToString(val,2);
-            string dist="";
-            for (int i=0; i<15-d.Length; i++)
-            {
-                dist += "0";
-            }
-            dist += d;
-            return dist;
         }
         Direction direction=Direction.N;
         [DllImport("user32.dll")]
@@ -453,31 +368,6 @@ namespace ORTS.Scripting.Script
             {
                 e.HandleEvent(evt, message);
             }
-        }
-        bool SignalPassed = false;
-        float PreviousSignalDistanceM = 0;
-        Aspect PreviousSignalAspect;
-		protected void UpdateSignalPassed()
-        {
-            SignalPassed = (NextSignalDistanceM(0) > PreviousSignalDistanceM+20)&&(SpeedMpS()>0.1f);
-            PreviousSignalDistanceM = NextSignalDistanceM(0);
-            if (SignalPassed && NextSignalAspect(0) == Aspect.None) SignalPassed = false;
-            if (!SignalPassed) PreviousSignalAspect = NextSignalAspect(0);
-        }
-        bool InfillPassed=false;
-        bool InfillReset=false;
-        protected void UpdateInfillPassed()
-        {
-            InfillPassed = false;
-            if (NextSignalDistanceM(0) < 300)
-            {
-                if (!InfillReset)
-                {
-                    InfillReset = true;
-                    InfillPassed = true;
-                }
-            }
-            if (SignalPassed) InfillReset = false;
         }
         bool ATFon = false;
         float cruise_speed=0;
@@ -746,7 +636,7 @@ namespace ORTS.Scripting.Script
     }
     public class ETCS : InteractiveTCS
     {
-        public ETCS(TrainControlSystem tcs) : base(tcs)
+        public ETCS(ServerTCS tcs) : base(tcs)
         {
         }
         public override void SetEmergency(bool emergency)
@@ -761,6 +651,113 @@ namespace ORTS.Scripting.Script
         }
         public override void Update()
         {
+            Client c = ((ServerTCS)tcs).c;
+            UpdateSignalPassed();
+            UpdateInfillPassed();
+            if(SignalPassed)
+            {
+                string ma="00001100"+"01";
+                float maend=0;
+                if(PreviousSignalAspect==Aspect.Stop)
+                {
+                    ma += "0000001011111"+"01";
+                    ma += "0000000"+"0000000"+"0000000000"+"00000";
+                    ma += "000000000000000"+"0"+"0"+"1"+"000000011001000"+"1111111"+"0";
+                }
+                else if(PreviousSignalAspect==Aspect.Clear_1 || PreviousSignalAspect==Aspect.Clear_2 || PreviousSignalAspect==Aspect.Approach_2)
+                {
+                    ma += "0000001011111"+"01";
+                    ma += "0101000"+"0000000"+"0000000000"+"00000";
+                    ma += format_etcs_distance(tcs.NextSignalDistanceM(1))+"0"+"0"+"1"+"000000011001000"+"1111111"+"0";
+                }
+                else
+                {
+                    ma += "0000001011111"+"01";
+                    ma += "0101000"+"0000000"+"0000000000"+"00000";
+                    ma += format_etcs_distance(tcs.NextSignalDistanceM(0))+"0"+"0"+"1"+"000000011001000"+"1111111"+"0";
+                }
+                string ssp="00011011"+"01"+"0000000000000"+"01";
+                ssp += "000000000000000"+format_etcs_speed(tcs.CurrentPostSpeedLimitMpS())+"0"+"00000";
+                ssp += "00000";
+                int niter=0;
+                float sspend = tcs.NextSignalDistanceM(1)+1000;
+                float dist=0;
+                for(int i=0; i<10; i++)
+                {
+                    float prevdist = dist;
+                    dist = tcs.NextPostDistanceM(i);
+                    if (dist > sspend || dist==prevdist)
+                        break;
+                    ssp+=format_etcs_distance(dist-prevdist)+format_etcs_speed(tcs.NextPostSpeedLimitMpS(i))+"0"+"00000";
+                    dist=tcs.NextPostDistanceM(i);
+                    niter=i+1;
+                }
+                niter++;
+                ssp += format_etcs_distance(sspend)+"1111111"+"0"+"00000";
+                string sspsize = Convert.ToString(ssp.Length,2);
+                int i0 = 23-sspsize.Length;
+                char[] ssparr = ssp.ToCharArray();
+                for (int i=i0; i<23; i++)
+                {
+                    ssparr[i] = sspsize[i-i0];
+                }
+                string n_iter = Convert.ToString(niter,2);
+                i0 = 58-n_iter.Length;
+                for (int i=i0; i<58; i++)
+                {
+                    ssparr[i] = n_iter[i-i0];
+                }
+                ssp = new string(ssparr);
+                string grad="00010101"+"01"+"0000001001110"+"01";
+                grad += "000000000000000"+"0"+"00000000";
+                grad += "00001";
+                grad += "111111111111111"+"0"+"11111111";
+                string link="00000101"+"01"+"0000001000101"+"01"+format_etcs_distance(tcs.NextSignalDistanceM(0))+"0"+"00000000000001"+"1"+"00"+"001100"+"00000";
+                string tel1 = "1"+"0100001"+"0"+"000"+"010"+"00"+"11111111"+"0000000000"+"00000000000001"+"1";
+                tel1 += grad + ssp + "11111111";
+                string tel2 = "1"+"0100001"+"0"+"001"+"010"+"00"+"11111111"+"0000000000"+"00000000000001"+"1";
+                tel2 += ma + "11111111";
+                string tel3 = "1"+"0100001"+"0"+"010"+"010"+"00"+"11111111"+"0000000000"+"00000000000001"+"1";
+                tel3 += link + "11111111";
+                c.WriteLine("etcs_telegram="+tel1);
+                c.WriteLine("etcs_telegram="+tel2);
+                c.WriteLine("etcs_telegram="+tel3);
+            }
+            if(InfillPassed)
+            {
+                /*string val;
+                int num=1;
+                if(PreviousSignalAspect==Aspect.Clear_1 || PreviousSignalAspect==Aspect.Clear_2 || PreviousSignalAspect==Aspect.Approach_2) num=2;
+                float start = NextSignalDistanceM(0);
+                val = "etcs_ma_infill="+start.ToString().Replace(',','.');
+                val += ","+(NextSignalDistanceM(num)-start).ToString().Replace(',','.');
+                c.WriteLine(val);*/
+            }
+        }
+        bool SignalPassed = false;
+        float PreviousSignalDistanceM = 0;
+        Aspect PreviousSignalAspect;
+		protected void UpdateSignalPassed()
+        {
+            SignalPassed = (tcs.NextSignalDistanceM(0) > PreviousSignalDistanceM+20)&&(tcs.SpeedMpS()>0.1f);
+            PreviousSignalDistanceM = tcs.NextSignalDistanceM(0);
+            if (SignalPassed && tcs.NextSignalAspect(0) == Aspect.None) SignalPassed = false;
+            if (!SignalPassed) PreviousSignalAspect = tcs.NextSignalAspect(0);
+        }
+        bool InfillPassed=false;
+        bool InfillReset=false;
+        protected void UpdateInfillPassed()
+        {
+            InfillPassed = false;
+            if (tcs.NextSignalDistanceM(0) < 300)
+            {
+                if (!InfillReset)
+                {
+                    InfillReset = true;
+                    InfillPassed = true;
+                }
+            }
+            if (SignalPassed) InfillReset = false;
         }
         public override bool HandleParameter(Parameter p)
         {
@@ -775,6 +772,30 @@ namespace ORTS.Scripting.Script
                 return true;
             }
             return false;
+        }
+        string format_etcs_speed(float speedmps)
+        {
+            int val = (int)Math.Round(speedmps*3.6)/5;
+            string spd = Convert.ToString(val,2);
+            string speed="";
+            for (int i=0; i<7-spd.Length; i++)
+            {
+                speed += "0";
+            }
+            speed += spd;
+            return speed;
+        }
+        string format_etcs_distance(float distm)
+        {
+            int val = (int)distm;
+            string d = Convert.ToString(val,2);
+            string dist="";
+            for (int i=0; i<15-d.Length; i++)
+            {
+                dist += "0";
+            }
+            dist += d;
+            return dist;
         }
     }
     public abstract class ASFA : InteractiveTCS
@@ -1047,25 +1068,98 @@ namespace ORTS.Scripting.Script
         //Transición a LZB/ERTMS
         public bool AKT = false; //Inhibir freno de urgencia
         public bool CON = true; //Conexión de ASFA
+        int UltimaInfo=7;
+        bool controldesv=false;
+        bool secAA=false;
+        int TargetState=0;
+        int IndicadorLVI=0;
+        int IndicadorPNdesp=0;
+        int IndicadorPNprot=0;
+        int IndicadorFrenado=0;
         public ASFADigital(TrainControlSystem tcs) : base(tcs)
         {
         }
         public override void Initialize()
         {
             //ToDo: send DIV data
+            tcs.SetCustomizedTCSControlString("Rec. anuncio parada");
+            tcs.SetCustomizedTCSControlString("Rec. anuncio precaucion");
+            tcs.SetCustomizedTCSControlString("Rec. preanuncio o condicional");
+            tcs.SetCustomizedTCSControlString("Modo ASFA");
+            tcs.SetCustomizedTCSControlString("Rearme freno");
+            tcs.SetCustomizedTCSControlString("Rebase autorizado");
+            tcs.SetCustomizedTCSControlString("Aumento vel. ASFA");
+            tcs.SetCustomizedTCSControlString("Rec. alarma ASFA");
+            tcs.SetCustomizedTCSControlString("Ocultacion info ASFA");
+            tcs.SetCustomizedTCSControlString("Rec. limitacion vel. ASFA");
+            tcs.SetCustomizedTCSControlString("Rec. paso a nivel");
         }
         public override void Update()
-        { 
-            base.Update();
-        }
-        public override void HandleEvent(TCSEvent ev, string message)
         {
-
+            base.Update();
+            //tcs.SetNextSignalAspect(UltimaInfo);
+            tcs.SetCabDisplayControl(15, UltimaInfo);
+            tcs.SetCabDisplayControl(16, IndicadorPNdesp != 0 ? 2 : (IndicadorPNprot != 0 ? 1 : 0));
+            tcs.SetCabDisplayControl(17, controldesv ? 2 : (secAA ? 5 : 0));
+            tcs.SetCabDisplayControl(18, IndicadorLVI);
+            tcs.SetCabDisplayControl(20, TargetState == 0 ? 2 : (TargetState == 1 ? 0 : 1));
+            tcs.SetCabDisplayControl(21, IlumModo ? 1 : 0);
+            tcs.SetCabDisplayControl(22, IlumRearme ? 1 : 0);
+            tcs.SetCabDisplayControl(23, IlumRebase ? 1 : 0);
+            tcs.SetCabDisplayControl(24, IlumAumento ? 1 : 0);
+            tcs.SetCabDisplayControl(25, IlumAlarma ? 1 : 0);
+            tcs.SetCabDisplayControl(26, IlumOcult ? 1 : 0);
+            tcs.SetCabDisplayControl(27, IlumLVI ? 1 : 0);
+            tcs.SetCabDisplayControl(28, IlumPN ? 1 : 0);
+            tcs.SetCabDisplayControl(29, IlumAnpar ? 1 : 0);
+            tcs.SetCabDisplayControl(30, IlumAnpre ? 1 : 0);
+            tcs.SetCabDisplayControl(31, IlumVLcond ? (IlumPrepar ? 3 : 2) : (IlumPrepar ? 1 : 0));
+            tcs.SetOverspeedWarningDisplay(IndicadorFrenado != 0 ? true : false);
+            tcs.SetPenaltyApplicationDisplay(Emergency);
         }
-        public override void SetEmergency(bool emergency) {}
         bool Anun = false;
         bool Prec = false;
         bool Prean = false;
+        bool Modo = false;
+        bool Rearme = false;
+        bool Rebase = false;
+        bool Aumento = false;
+        bool Alarma = false;
+        bool Ocultacion = false;
+        bool LTV = false;
+        bool PN = false;
+        bool IlumAnpar=false;
+        bool IlumAnpre=false;
+        bool IlumPrepar=false;
+        bool IlumVLcond=false;
+        bool IlumModo=false;
+        bool IlumRearme=false;
+        bool IlumRebase=false;
+        bool IlumAumento=false;
+        bool IlumAlarma=false;
+        bool IlumOcult=false;
+        bool IlumLVI=false;
+        bool IlumPN=false;
+        public override void HandleEvent(TCSEvent ev, string message)
+        {
+            if(ev == TCSEvent.GenericTCSButtonPressed || ev == TCSEvent.GenericTCSButtonReleased)
+            {
+                int num = int.Parse(message);
+                bool pressed = ev == TCSEvent.GenericTCSButtonPressed;
+                if(num==0) Anun = pressed;
+                else if(num==1) Prec = pressed;
+                else if(num==2) Prean = pressed;
+                else if(num==3) Modo = pressed;
+                else if(num==4) Rearme = pressed;
+                else if(num==5) Rebase = pressed;
+                else if(num==6) Aumento = pressed;
+                else if(num==7) Alarma = pressed;
+                else if(num==8) Ocultacion = pressed;
+                else if(num==9) LTV = pressed;
+                else if(num==10) PN = pressed;
+            }
+        }
+        public override void SetEmergency(bool emergency) {}
         public override bool HandleParameter(Parameter p)
         {
             if(p.name=="asfa_sound_trigger")
@@ -1084,6 +1178,188 @@ namespace ORTS.Scripting.Script
             else if(p.name=="asfa_target_speed")
             {
                 p.SetValue = (string val) => tcs.SetNextSpeedLimitMpS(MpS.FromKpH(float.Parse(val)));
+                return true;
+            }
+            else if(p.name=="asfa_target_state")
+            {
+                p.SetValue = (string val) => TargetState = int.Parse(val);
+                return true;
+            }
+            else if(p.name=="asfa_last_info")
+            {
+                p.SetValue = (string val) => {
+                    int num = int.Parse(val);
+                    switch(num)
+                    {
+                        case 2:
+                            UltimaInfo = 0;
+                            break;
+                        case 3:
+                            UltimaInfo = 1;
+                            break;
+                        case 4:
+                            UltimaInfo = 5;
+                            break;
+                        case 5:
+                            UltimaInfo = 4;
+                            break;
+                        case 6:
+                        case 7:
+                            UltimaInfo = 5;
+                            break;
+                        case 8:
+                            UltimaInfo = 6;
+                            break;
+                        default:
+                            UltimaInfo = 7;
+                            break;
+                    }
+                };
+                return true;
+            }
+            else if(p.name=="asfa_control_desvio")
+            {
+                p.SetValue = (string val) => controldesv = val=="1";
+                return true;
+            }
+            else if(p.name=="asfa_secuencia_aa")
+            {
+                p.SetValue = (string val) => secAA = val=="1";
+                return true;
+            }
+            else if(p.name=="asfa_indicador_lvi")
+            {
+                p.SetValue = (string val) => IndicadorLVI = int.Parse(val);
+                return true;
+            }
+            else if(p.name=="asfa_indicador_pndesp")
+            {
+                p.SetValue = (string val) => IndicadorPNdesp = int.Parse(val);
+                return true;
+            }
+            else if(p.name=="asfa_indicador_pnprot")
+            {
+                p.SetValue = (string val) => IndicadorPNprot = int.Parse(val);
+                return true;
+            }
+            else if(p.name=="asfa_indicador_frenado")
+            {
+                p.SetValue = (string val) => IndicadorFrenado = int.Parse(val);
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_anpar")
+            {
+                p.GetValue = () => Anun ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_anpre")
+            {
+                p.GetValue = () => Prec ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_prepar")
+            {
+                p.GetValue = () => Prean ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_modo")
+            {
+                p.GetValue = () => Modo ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_rearme")
+            {
+                p.GetValue = () => Rearme ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_rebase")
+            {
+                p.GetValue = () => Rebase ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_aumento")
+            {
+                p.GetValue = () => Aumento ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_alarma")
+            {
+                p.GetValue = () => Alarma ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_ocultacion")
+            {
+                p.GetValue = () => Ocultacion ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_lvi")
+            {
+                p.GetValue = () => LTV ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_pulsador_pn")
+            {
+                p.GetValue = () => PN ? "1" : "0";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_anpar")
+            {
+                p.SetValue = (string val) => IlumAnpar = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_anpre")
+            {
+                p.SetValue = (string val) => IlumAnpre = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_prepar")
+            {
+                p.SetValue = (string val) => IlumPrepar = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_vlcond")
+            {
+                p.SetValue = (string val) => IlumVLcond = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_modo")
+            {
+                p.SetValue = (string val) => IlumModo = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_rearme")
+            {
+                p.SetValue = (string val) => IlumRearme = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_rebase")
+            {
+                p.SetValue = (string val) => IlumRebase = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_aumento")
+            {
+                p.SetValue = (string val) => IlumAumento = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_alarma")
+            {
+                p.SetValue = (string val) => IlumAlarma = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_ocultacion")
+            {
+                p.SetValue = (string val) => IlumOcult = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_lvi")
+            {
+                p.SetValue = (string val) => IlumLVI = val== "1";
+                return true;
+            }
+            else if(p.name=="asfa_ilumpuls_pn")
+            {
+                p.SetValue = (string val) => IlumPN = val== "1";
                 return true;
             }
             else return base.HandleParameter(p);
