@@ -11,7 +11,10 @@ using System.Text;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Runtime.InteropServices;
+using Orts.Common;
 using Event = Orts.Common.Event;
+using Orts.Simulation.Physics;
+using Orts.Simulation.Signalling;
 namespace ORTS.Scripting.Script
 {
     public class ServerTCS : TrainControlSystem
@@ -123,6 +126,10 @@ namespace ORTS.Scripting.Script
                 {
                     p.SetValue = (string val) => setKey(0x42, val != "1" && val != "true");
                 }
+                else if(parameter=="simulator_time")
+                {
+                    p.GetValue = () => ClockTime().ToString().Replace(',','.');
+                }
                 else
                 {
                     bool assigned = false;
@@ -156,6 +163,8 @@ namespace ORTS.Scripting.Script
                 i.Activated = true;
                 i.Initialize();
             }
+            NextRepeaterSignalAspect = () => NextRepeaterSignalItem<Aspect>(ref SignalAspect, Train.TrainObjectItem.TRAINOBJECTTYPE.SIGNAL);
+            NextRepeaterSignalDistanceM = () => NextRepeaterSignalItem<float>(ref SignalDistance, Train.TrainObjectItem.TRAINOBJECTTYPE.SIGNAL);
         }
         float prevDynamic=0;
         float prevThrottle=0;
@@ -399,6 +408,31 @@ namespace ORTS.Scripting.Script
             LastTime = ClockTime();
             LastError = error;
 		}
+		Aspect SignalAspect;
+        float SignalDistance;
+		public Func<Aspect> NextRepeaterSignalAspect;
+        public Func<float> NextRepeaterSignalDistanceM;
+		T NextRepeaterSignalItem<T>(ref T retval, Train.TrainObjectItem.TRAINOBJECTTYPE type)
+        {
+            if (Locomotive().Train.ValidRoute[0] != null && Locomotive().Train.PresentPosition[0].RouteListIndex >= 0)
+            {
+                TrackCircuitSignalItem nextSignal = Locomotive().Train.signalRef.Find_Next_Object_InRoute(Locomotive().Train.ValidRoute[0],
+                    Locomotive().Train.PresentPosition[0].RouteListIndex, Locomotive().Train.PresentPosition[0].TCOffset,
+                            400, Orts.Formats.Msts.MstsSignalFunction.REPEATER, Locomotive().Train.routedForward);
+
+                if (nextSignal.SignalState == ObjectItemInfo.ObjectItemFindState.Object)
+                {
+                    Aspect distanceSignalAspect = (Aspect)Locomotive().Train.signalRef.TranslateToTCSAspect(nextSignal.SignalRef.this_sig_lr(Orts.Formats.Msts.MstsSignalFunction.REPEATER));
+                    SignalAspect = distanceSignalAspect;
+                    SignalDistance = nextSignal.SignalLocation;
+                    return retval;
+                }
+            }
+
+            SignalAspect = Aspect.None;
+            SignalDistance = float.MaxValue;
+            return retval;
+        }
     }
     public abstract class Client
     {
@@ -507,11 +541,11 @@ namespace ORTS.Scripting.Script
     }
     public abstract class InteractiveTCS : TrainControlSystem
     {
-        public TrainControlSystem tcs;
+        public ServerTCS tcs;
         public bool Emergency = false;
         public bool FullBrake = false;
         public abstract bool HandleParameter(Parameter p);
-        public InteractiveTCS(TrainControlSystem tcs)
+        public InteractiveTCS(ServerTCS tcs)
         {
             this.tcs = tcs;
         }
@@ -529,7 +563,7 @@ namespace ORTS.Scripting.Script
         Timer HMReleasedAlertTimer;
         Timer HMReleasedEmergencyTimer;
 
-        public HM(TrainControlSystem tcs) : base(tcs)
+        public HM(ServerTCS tcs) : base(tcs)
         {
             SetVigilanceAlarm = (value) => { if (Activated) tcs.SetVigilanceAlarm(value); };
             SetVigilanceAlarmDisplay = (value) => { if (Activated) tcs.SetVigilanceAlarmDisplay(value); };
@@ -820,7 +854,7 @@ namespace ORTS.Scripting.Script
         float LVIstart = 0;
         Freq lvi1 = Freq.L11;
         Freq lvi2 = Freq.L11;
-        public ASFA(TrainControlSystem tcs) : base(tcs)
+        public ASFA(ServerTCS tcs) : base(tcs)
         {
 
         }
@@ -840,7 +874,7 @@ namespace ORTS.Scripting.Script
             //    else return FrecASFA.FP;
             //}
             //else
-            {
+            /*{
                 if (tcs.NextSignalDistanceM(PreviaSignalNumber) > PreviaDistance - 10 && tcs.NextSignalDistanceM(PreviaSignalNumber) < PreviaDistance)
                 {
                     BalizaAspect = tcs.NextSignalAspect(PreviaSignalNumber);
@@ -922,6 +956,33 @@ namespace ORTS.Scripting.Script
                     if (tcs.DistanceM() - LVIstart < 12) return Freq.FP;
                     if (tcs.DistanceM() - LVIstart < 15) return Freq.L9;
                     LVIstart = 0;
+                }
+            }
+            return Freq.FP;*/
+            float dist = tcs.NextRepeaterSignalDistanceM();
+            if (dist<5 && dist>0.01f)
+            {
+                switch(tcs.NextRepeaterSignalAspect())
+                {
+                    case Aspect.Permission:
+                    case Aspect.Stop:
+                        return Freq.L8;
+                    case Aspect.StopAndProceed:
+                        return Freq.L7;
+                    case Aspect.Restricted:
+                        return Freq.L4;
+                    case Aspect.Approach_1:
+                        return Freq.L1;
+                    case Aspect.Approach_2:
+                        return Freq.L5;
+                    case Aspect.Approach_3:
+                        return Freq.L6;
+                    case Aspect.Clear_1:
+                        return Freq.L2;
+                    case Aspect.Clear_2:
+                        return Freq.L3;
+                    default:
+                        return Freq.FP;
                 }
             }
             return Freq.FP;
@@ -1039,7 +1100,7 @@ namespace ORTS.Scripting.Script
     }
     class ASFAclasico : ASFA
     {
-        public ASFAclasico(TrainControlSystem tcs) : base(tcs)
+        public ASFAclasico(ServerTCS tcs) : base(tcs)
         {
         }
         public override void Initialize()
@@ -1076,15 +1137,12 @@ namespace ORTS.Scripting.Script
         int IndicadorPNdesp=0;
         int IndicadorPNprot=0;
         int IndicadorFrenado=0;
-        public ASFADigital(TrainControlSystem tcs) : base(tcs)
+        public ASFADigital(ServerTCS tcs) : base(tcs)
         {
         }
         public override void Initialize()
         {
             //ToDo: send DIV data
-            tcs.SetCustomizedTCSControlString("Rec. anuncio parada");
-            tcs.SetCustomizedTCSControlString("Rec. anuncio precaucion");
-            tcs.SetCustomizedTCSControlString("Rec. preanuncio o condicional");
             tcs.SetCustomizedTCSControlString("Modo ASFA");
             tcs.SetCustomizedTCSControlString("Rearme freno");
             tcs.SetCustomizedTCSControlString("Rebase autorizado");
@@ -1093,6 +1151,9 @@ namespace ORTS.Scripting.Script
             tcs.SetCustomizedTCSControlString("Ocultacion info ASFA");
             tcs.SetCustomizedTCSControlString("Rec. limitacion vel. ASFA");
             tcs.SetCustomizedTCSControlString("Rec. paso a nivel");
+            tcs.SetCustomizedTCSControlString("Rec. anuncio parada");
+            tcs.SetCustomizedTCSControlString("Rec. anuncio precaucion");
+            tcs.SetCustomizedTCSControlString("Rec. preanuncio o condicional");
         }
         public override void Update()
         {
@@ -1114,6 +1175,7 @@ namespace ORTS.Scripting.Script
             tcs.SetCabDisplayControl(29, IlumAnpar ? 1 : 0);
             tcs.SetCabDisplayControl(30, IlumAnpre ? 1 : 0);
             tcs.SetCabDisplayControl(31, IlumVLcond ? (IlumPrepar ? 3 : 2) : (IlumPrepar ? 1 : 0));
+            tcs.SetCabDisplayControl(11, Emergency ? 1 : (IndicadorFrenado!=0 ? (IndicadorFrenado + 1) : 0));
             tcs.SetOverspeedWarningDisplay(IndicadorFrenado != 0 ? true : false);
             tcs.SetPenaltyApplicationDisplay(Emergency);
         }
@@ -1204,8 +1266,10 @@ namespace ORTS.Scripting.Script
                             UltimaInfo = 4;
                             break;
                         case 6:
+                            UltimaInfo = 2;
+                            break;
                         case 7:
-                            UltimaInfo = 5;
+                            UltimaInfo = 3;
                             break;
                         case 8:
                             UltimaInfo = 6;
