@@ -22,18 +22,28 @@ namespace ORTS.Scripting.Script
         public Client c=null;
         HashSet<Parameter> parameters = new HashSet<Parameter>();
         List<InteractiveTCS> tcs = new List<InteractiveTCS>();
+        public void RequestModule(string module)
+        {
+            if (c != null) c.WriteLine("request_module("+module+")");
+        }
+        public void Register(string parameter)
+        {
+            if (c != null) c.WriteLine("register("+parameter+")");
+        }
+        public void RemoveParameter(string parameter)
+        {
+            parameters.Remove(new Parameter(parameter));
+            if (c != null) c.WriteLine("unregister("+parameter+")");
+        }
+        public void SendParameter(string parameter, string value)
+        {
+            if (c != null) c.WriteLine(parameter+"="+value);
+        }
         Parameter GetParameter(string parameter)
         {
             Parameter compared = new Parameter(parameter);
             Parameter p = null;
-            foreach(Parameter p1 in parameters)
-            {
-                if(compared.Equals(p1))
-                {
-                    p = p1;
-                    break;
-                }
-            }
+            parameters.TryGetValue(compared, out p);
             if (p==null)
             {
                 p = compared;
@@ -210,29 +220,6 @@ namespace ORTS.Scripting.Script
                 c.WriteLine("register(sander)");
                 c.WriteLine("register(headlight)");
                 c.WriteLine("register(hm_pressed)");
-                c.WriteLine("request_module(asfa_digital)");
-                c.WriteLine("register(asfa_emergency)");
-                c.WriteLine("register(asfa_target_speed)");
-                c.WriteLine("register(asfa_target_state)");
-                c.WriteLine("register(asfa_last_info)");
-                c.WriteLine("register(asfa_secuencia_aa)");
-                c.WriteLine("register(asfa_control_desvio)");
-                c.WriteLine("register(asfa_indicador_lvi)");
-                c.WriteLine("register(asfa_indicador_pndesp)");
-                c.WriteLine("register(asfa_indicador_pnprot)");
-                c.WriteLine("register(asfa_indicador_frenado)");
-                c.WriteLine("register(asfa_ilumpuls_anpar)");
-                c.WriteLine("register(asfa_ilumpuls_anpre)");
-                c.WriteLine("register(asfa_ilumpuls_prepar)");
-                c.WriteLine("register(asfa_ilumpuls_vlcond)");
-                c.WriteLine("register(asfa_ilumpuls_modo)");
-                c.WriteLine("register(asfa_ilumpuls_rearme)");
-                c.WriteLine("register(asfa_ilumpuls_rebase)");
-                c.WriteLine("register(asfa_ilumpuls_aumento)");
-                c.WriteLine("register(asfa_ilumpuls_alarma)");
-                c.WriteLine("register(asfa_ilumpuls_ocultacion)");
-                c.WriteLine("register(asfa_ilumpuls_lvi)");
-                c.WriteLine("register(asfa_ilumpuls_pn)");
                 c.WriteLine("register(etcs_emergency)");
                 c.WriteLine("register(etcs_fullbrake)");
             }
@@ -312,9 +299,10 @@ namespace ORTS.Scripting.Script
                 SetDynamicBrakeController(0);
             }
             pressKey();
-            SetEmergencyBrake(Emergency||IsDirectionNeutral());
+            SetEmergencyBrake(Emergency/*||IsDirectionNeutral()*/);
             SetFullBrake(FullBrake);
             SetTractionAuthorization(!DoesBrakeCutPower() || BrakeCutsPowerAtBrakeCylinderPressureBar() > LocomotiveBrakeCylinderPressureBar());
+            SetOverspeedWarningDisplay(SpeedMpS()>105/3.6f);
         }
         Direction direction=Direction.N;
         [DllImport("user32.dll")]
@@ -573,15 +561,16 @@ namespace ORTS.Scripting.Script
         {
             throw new NotImplementedException();
         }
+        bool InvertResetButton = false;
         public override void HandleEvent(TCSEvent evt, string message)
         {
             switch(evt)
             {
                 case TCSEvent.AlerterPressed:
-                    Pressed = true;
+                    Pressed = !InvertResetButton;
                     break;
                 case TCSEvent.AlerterReleased:
-                    Pressed = false;
+                    Pressed = InvertResetButton;
                     break;
             }
         }
@@ -608,10 +597,13 @@ namespace ORTS.Scripting.Script
                 HMReleasedEmergencyTimer.Stop();
                 HMPressedAlertTimer.Stop();
                 HMPressedEmergencyTimer.Stop();
-                Emergency = false;
+                if (Emergency)
+                {
+                    Emergency = false;
+                    SetVigilanceEmergencyDisplay(false);
+                }
                 if (tcs.AlerterSound()) SetVigilanceAlarm(false);
                 SetVigilanceAlarmDisplay(false);
-                //SetVigilanceEmergencyDisplay(false);
                 return;
             }
             if (Pressed && (!HMPressedAlertTimer.Started || !HMPressedEmergencyTimer.Started))
@@ -620,8 +612,13 @@ namespace ORTS.Scripting.Script
                 HMReleasedEmergencyTimer.Stop();
                 HMPressedAlertTimer.Start();
                 HMPressedEmergencyTimer.Start();
-                if (!tcs.AlerterSound()) SetVigilanceAlarm(false);
+                if (tcs.AlerterSound()) SetVigilanceAlarm(false);
                 SetVigilanceAlarmDisplay(false);
+                /*if (Emergency)
+                {
+                    Emergency = false;
+                    SetVigilanceEmergencyDisplay(false);
+                }*/
             }
             if (Pressed && HMPressedAlertTimer.RemainingValue < 2.5f)
             {
@@ -635,6 +632,11 @@ namespace ORTS.Scripting.Script
                 HMPressedEmergencyTimer.Stop();
                 if (tcs.AlerterSound()) SetVigilanceAlarm(false);
                 SetVigilanceAlarmDisplay(true);
+                /*if (Emergency)
+                {
+                    Emergency = false;
+                    SetVigilanceEmergencyDisplay(false);
+                }*/
             }
             if (HMReleasedAlertTimer.Triggered || HMPressedAlertTimer.Triggered)
             {
@@ -652,11 +654,11 @@ namespace ORTS.Scripting.Script
                 SetVigilanceAlarmDisplay(false);
                 SetVigilanceEmergencyDisplay(true);
             }
-            if (Emergency && tcs.SpeedMpS() < 1.5f)
+            /*if (Emergency && tcs.SpeedMpS() < 1.5f)
             {
                 Emergency = false;
                 SetVigilanceEmergencyDisplay(false);
-            }
+            }*/
         }
         public override bool HandleParameter(Parameter p)
         {
@@ -1137,48 +1139,6 @@ namespace ORTS.Scripting.Script
         int IndicadorPNdesp=0;
         int IndicadorPNprot=0;
         int IndicadorFrenado=0;
-        public ASFADigital(ServerTCS tcs) : base(tcs)
-        {
-        }
-        public override void Initialize()
-        {
-            //ToDo: send DIV data
-            tcs.SetCustomizedTCSControlString("Modo ASFA");
-            tcs.SetCustomizedTCSControlString("Rearme freno");
-            tcs.SetCustomizedTCSControlString("Rebase autorizado");
-            tcs.SetCustomizedTCSControlString("Aumento vel. ASFA");
-            tcs.SetCustomizedTCSControlString("Rec. alarma ASFA");
-            tcs.SetCustomizedTCSControlString("Ocultacion info ASFA");
-            tcs.SetCustomizedTCSControlString("Rec. limitacion vel. ASFA");
-            tcs.SetCustomizedTCSControlString("Rec. paso a nivel");
-            tcs.SetCustomizedTCSControlString("Rec. anuncio parada");
-            tcs.SetCustomizedTCSControlString("Rec. anuncio precaucion");
-            tcs.SetCustomizedTCSControlString("Rec. preanuncio o condicional");
-        }
-        public override void Update()
-        {
-            base.Update();
-            //tcs.SetNextSignalAspect(UltimaInfo);
-            tcs.SetCabDisplayControl(15, UltimaInfo);
-            tcs.SetCabDisplayControl(16, IndicadorPNdesp != 0 ? 2 : (IndicadorPNprot != 0 ? 1 : 0));
-            tcs.SetCabDisplayControl(17, controldesv ? 2 : (secAA ? 5 : 0));
-            tcs.SetCabDisplayControl(18, IndicadorLVI);
-            tcs.SetCabDisplayControl(20, TargetState == 0 ? 2 : (TargetState == 1 ? 0 : 1));
-            tcs.SetCabDisplayControl(21, IlumModo ? 1 : 0);
-            tcs.SetCabDisplayControl(22, IlumRearme ? 1 : 0);
-            tcs.SetCabDisplayControl(23, IlumRebase ? 1 : 0);
-            tcs.SetCabDisplayControl(24, IlumAumento ? 1 : 0);
-            tcs.SetCabDisplayControl(25, IlumAlarma ? 1 : 0);
-            tcs.SetCabDisplayControl(26, IlumOcult ? 1 : 0);
-            tcs.SetCabDisplayControl(27, IlumLVI ? 1 : 0);
-            tcs.SetCabDisplayControl(28, IlumPN ? 1 : 0);
-            tcs.SetCabDisplayControl(29, IlumAnpar ? 1 : 0);
-            tcs.SetCabDisplayControl(30, IlumAnpre ? 1 : 0);
-            tcs.SetCabDisplayControl(31, IlumVLcond ? (IlumPrepar ? 3 : 2) : (IlumPrepar ? 1 : 0));
-            tcs.SetCabDisplayControl(11, Emergency ? 1 : (IndicadorFrenado!=0 ? (IndicadorFrenado + 1) : 0));
-            tcs.SetOverspeedWarningDisplay(IndicadorFrenado != 0 ? true : false);
-            tcs.SetPenaltyApplicationDisplay(Emergency);
-        }
         bool Anun = false;
         bool Prec = false;
         bool Prean = false;
@@ -1202,12 +1162,164 @@ namespace ORTS.Scripting.Script
         bool IlumOcult=false;
         bool IlumLVI=false;
         bool IlumPN=false;
+        public ASFADigital(ServerTCS tcs) : base(tcs)
+        {
+        }
+        void Conex()
+        {
+            UltimaInfo=7;
+            controldesv=false;
+            secAA=false;
+            TargetState=0;
+            IndicadorLVI=0;
+            IndicadorPNdesp=0;
+            IndicadorPNprot=0;
+            IndicadorFrenado=0;
+            Anun = false;
+            Prec = false;
+            Prean = false;
+            Modo = false;
+            Rearme = false;
+            Rebase = false;
+            Aumento = false;
+            Alarma = false;
+            Ocultacion = false;
+            LTV = false;
+            PN = false;
+            IlumAnpar=false;
+            IlumAnpre=false;
+            IlumPrepar=false;
+            IlumVLcond=false;
+            IlumModo=false;
+            IlumRearme=false;
+            IlumRebase=false;
+            IlumAumento=false;
+            IlumAlarma=false;
+            IlumOcult=false;
+            IlumLVI=false;
+            IlumPN=false;
+            Connected = true;
+            tcs.SetCabDisplayControl(11, 1);
+            
+            tcs.RequestModule("asfa_digital");
+            tcs.Register("asfa_emergency");
+            tcs.Register("asfa_target_speed");
+            tcs.Register("asfa_target_state");
+            tcs.Register("asfa_last_info");
+            tcs.Register("asfa_secuencia_aa");
+            tcs.Register("asfa_control_desvio");
+            tcs.Register("asfa_indicador_lvi");
+            tcs.Register("asfa_indicador_pndesp");
+            tcs.Register("asfa_indicador_pnprot");
+            tcs.Register("asfa_indicador_frenado");
+            tcs.Register("asfa_ilumpuls_anpar");
+            tcs.Register("asfa_ilumpuls_anpre");
+            tcs.Register("asfa_ilumpuls_prepar");
+            tcs.Register("asfa_ilumpuls_vlcond");
+            tcs.Register("asfa_ilumpuls_modo");
+            tcs.Register("asfa_ilumpuls_rearme");
+            tcs.Register("asfa_ilumpuls_rebase");
+            tcs.Register("asfa_ilumpuls_aumento");
+            tcs.Register("asfa_ilumpuls_alarma");
+            tcs.Register("asfa_ilumpuls_ocultacion");
+            tcs.Register("asfa_ilumpuls_lvi");
+            tcs.Register("asfa_ilumpuls_pn");
+            
+            tcs.SendParameter("asfa_pulsador_conex", "1");
+        }
+        void Desconex()
+        {
+            Connected = false;
+            Emergency = false;
+            tcs.SetCabDisplayControl(11, 0);
+            
+            tcs.RemoveParameter("asfa_emergency");
+            tcs.RemoveParameter("asfa_target_speed");
+            tcs.RemoveParameter("asfa_target_state");
+            tcs.RemoveParameter("asfa_last_info");
+            tcs.RemoveParameter("asfa_secuencia_aa");
+            tcs.RemoveParameter("asfa_control_desvio");
+            tcs.RemoveParameter("asfa_indicador_lvi");
+            tcs.RemoveParameter("asfa_indicador_pndesp");
+            tcs.RemoveParameter("asfa_indicador_pnprot");
+            tcs.RemoveParameter("asfa_indicador_frenado");
+            tcs.RemoveParameter("asfa_ilumpuls_anpar");
+            tcs.RemoveParameter("asfa_ilumpuls_anpre");
+            tcs.RemoveParameter("asfa_ilumpuls_prepar");
+            tcs.RemoveParameter("asfa_ilumpuls_vlcond");
+            tcs.RemoveParameter("asfa_ilumpuls_modo");
+            tcs.RemoveParameter("asfa_ilumpuls_rearme");
+            tcs.RemoveParameter("asfa_ilumpuls_rebase");
+            tcs.RemoveParameter("asfa_ilumpuls_aumento");
+            tcs.RemoveParameter("asfa_ilumpuls_alarma");
+            tcs.RemoveParameter("asfa_ilumpuls_ocultacion");
+            tcs.RemoveParameter("asfa_ilumpuls_lvi");
+            tcs.RemoveParameter("asfa_ilumpuls_pn");
+            /*tcs.RemoveParameter("asfa_pulsador_anpar");
+            tcs.RemoveParameter("asfa_pulsador_anpre");
+            tcs.RemoveParameter("asfa_pulsador_prepar");
+            tcs.RemoveParameter("asfa_pulsador_modo");
+            tcs.RemoveParameter("asfa_pulsador_rearme");
+            tcs.RemoveParameter("asfa_pulsador_rebase");
+            tcs.RemoveParameter("asfa_pulsador_aumento");
+            tcs.RemoveParameter("asfa_pulsador_alarma");
+            tcs.RemoveParameter("asfa_pulsador_ocultacion");
+            tcs.RemoveParameter("asfa_pulsador_lvi");
+            tcs.RemoveParameter("asfa_pulsador_pn");*/
+            
+            tcs.SendParameter("asfa_pulsador_conex", "0");
+        }
+        public override void Initialize()
+        {
+            //ToDo: send DIV data
+            tcs.SetCustomizedTCSControlString("Rec. anuncio parada");
+            tcs.SetCustomizedTCSControlString("Rec. anuncio precaucion");
+            tcs.SetCustomizedTCSControlString("Rec. preanuncio o condicional");
+            tcs.SetCustomizedTCSControlString("Modo ASFA");
+            tcs.SetCustomizedTCSControlString("Rearme freno");
+            tcs.SetCustomizedTCSControlString("Rebase autorizado");
+            tcs.SetCustomizedTCSControlString("Aumento vel. ASFA");
+            tcs.SetCustomizedTCSControlString("Rec. alarma ASFA");
+            tcs.SetCustomizedTCSControlString("Ocultacion info ASFA");
+            tcs.SetCustomizedTCSControlString("Rec. limitacion vel. ASFA");
+            tcs.SetCustomizedTCSControlString("Rec. paso a nivel");
+            tcs.SetCustomizedTCSControlString("Conexión ASFA");
+        }
+        public override void Update()
+        {
+            base.Update();
+            tcs.SetCabDisplayControl(0, IlumAnpar ? 1 : 0);
+            tcs.SetCabDisplayControl(1, IlumAnpre ? 1 : 0);
+            tcs.SetCabDisplayControl(2, IlumVLcond ? (IlumPrepar ? 3 : 2) : (IlumPrepar ? 1 : 0));
+            tcs.SetCabDisplayControl(3, IlumModo ? 1 : 0);
+            tcs.SetCabDisplayControl(4, IlumRearme ? 1 : 0);
+            tcs.SetCabDisplayControl(5, IlumRebase ? 1 : 0);
+            tcs.SetCabDisplayControl(6, IlumAumento ? 1 : 0);
+            tcs.SetCabDisplayControl(7, IlumAlarma ? 1 : 0);
+            tcs.SetCabDisplayControl(8, IlumOcult ? 1 : 0);
+            tcs.SetCabDisplayControl(9, IlumLVI ? 1 : 0);
+            tcs.SetCabDisplayControl(10, IlumPN ? 1 : 0);
+            tcs.SetCabDisplayControl(15, UltimaInfo);
+            tcs.SetCabDisplayControl(16, IndicadorPNdesp != 0 ? 2 : (IndicadorPNprot != 0 ? 1 : 0));
+            tcs.SetCabDisplayControl(17, controldesv ? 2 : (secAA ? 5 : 0));
+            tcs.SetCabDisplayControl(18, IndicadorLVI);
+            tcs.SetCabDisplayControl(20, TargetState == 0 ? 2 : (TargetState == 1 ? 0 : 1));
+            tcs.SetCabDisplayControl(21, Emergency ? 3 : IndicadorFrenado);
+            //tcs.SetOverspeedWarningDisplay(IndicadorFrenado != 0 ? true : false);
+            //tcs.SetPenaltyApplicationDisplay(Emergency);
+        }
         public override void HandleEvent(TCSEvent ev, string message)
         {
             if(ev == TCSEvent.GenericTCSButtonPressed || ev == TCSEvent.GenericTCSButtonReleased)
             {
                 int num = int.Parse(message);
                 bool pressed = ev == TCSEvent.GenericTCSButtonPressed;
+                if (num == 11 && pressed)
+                {
+                    if (Connected) Desconex();
+                    else Conex();
+                    return;
+                }
                 if(num==0) Anun = pressed;
                 else if(num==1) Prec = pressed;
                 else if(num==2) Prean = pressed;
@@ -1224,7 +1336,7 @@ namespace ORTS.Scripting.Script
         public override void SetEmergency(bool emergency) {}
         public override bool HandleParameter(Parameter p)
         {
-            if(p.name=="asfa_sound_trigger")
+            /*if(p.name=="asfa_sound_trigger")
             {
                 p.SetValue = (string val) => 
                 {
@@ -1237,7 +1349,7 @@ namespace ORTS.Scripting.Script
                 };
                 return true;
             }
-            else if(p.name=="asfa_target_speed")
+            else */if(p.name=="asfa_target_speed")
             {
                 p.SetValue = (string val) => tcs.SetNextSpeedLimitMpS(MpS.FromKpH(float.Parse(val)));
                 return true;
